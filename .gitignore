@@ -1,0 +1,57 @@
+# Environment and credentials
+.env
+.env.*
+*.key
+*.pem
+*.crt
+*.credentials
+.credentials
+
+# Client data directories (never commit client data!)
+/opt/openwebui/*/
+clients/*/data/
+clients/*/static/
+
+# Backups
+*.backup
+*.bak
+*.tar.gz
+*.zip
+backups/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+*~
+*.swp
+*.swo
+
+# Node modules (if any tools use npm)
+node_modules/
+
+# Python virtual environments
+venv/
+env/
+.venv/
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-*
+
+# Test outputs
+test-results/
+coverage/
+
+# Docker volumes (should not be in repo)
+volumes/
+
+# OS-specific
+Thumbs.db
+.Spotlight-V100
+.Trashes

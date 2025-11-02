@@ -1,0 +1,636 @@
+#!/bin/bash
+# SQLite + Supabase Sync System - Sync Engine
+# Phase 1: One-way sync (SQLite → Supabase)
+#
+# This script runs INSIDE the sync container and performs synchronization
+# from a client's SQLite database to Supabase PostgreSQL.
+#
+# Usage: ./sync-client-to-supabase.sh CLIENT_NAME [--full]
+#
+# Architecture:
+# - Runs inside sync container (has asyncpg installed)
+# - Uses docker exec to access client container's SQLite
+# - Connects directly to Supabase from sync container
+# - No temporary container spawning needed
+
+set -euo pipefail
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+CLIENT_NAME="${1:-}"
+TRIGGERED_BY="${2:-manual}"
+FULL_SYNC="${3:-}"
+
+# Parse arguments (support both positional and named)
+shift
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --full)
+            FULL_SYNC="--full"
+            shift
+            ;;
+        --triggered-by)
+            TRIGGERED_BY="$2"
+            shift 2
+            ;;
+        *)
+            # If no flag, assume it's triggered_by if not --full
+            if [[ "$1" != "--full" ]] && [[ -z "${TRIGGERED_BY_SET:-}" ]]; then
+                TRIGGERED_BY="$1"
+                TRIGGERED_BY_SET=true
+            fi
+            shift
+            ;;
+    esac
+done
+
+if [[ -z "$CLIENT_NAME" ]]; then
+    echo "❌ Error: CLIENT_NAME required"
+    echo "Usage: $0 CLIENT_NAME [TRIGGERED_BY|--triggered-by TRIGGERED_BY] [--full]"
+    echo ""
+    echo "TRIGGERED_BY values: scheduler (automatic), api (REST API), manual (default), or username"
+    echo ""
+    echo "Examples:"
+    echo "  $0 chat-test                                    # Manual sync (default)"
+    echo "  $0 chat-test scheduler                          # Scheduler-triggered sync"
+    echo "  $0 chat-test --triggered-by api --full          # API-triggered full sync"
+    echo "  $0 chat-test manual --full                      # Manual full sync"
+    exit 1
+fi
+
+CONTAINER_NAME="openwebui-${CLIENT_NAME}"
+SQLITE_PATH="/app/backend/data/webui.db"
+BATCH_SIZE="${BATCH_SIZE:-1000}"
+DATABASE_URL="${DATABASE_URL:-}"
+
+if [[ -z "$DATABASE_URL" ]]; then
+    echo "❌ Error: DATABASE_URL environment variable not set"
+    exit 1
+fi
+
+# Tables to sync (from Open WebUI schema)
+TABLES=("user" "auth" "tag" "config" "chat" "oauth_session" "function" "message")
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+log_info() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] INFO: $*"
+}
+
+log_error() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2
+}
+
+log_success() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] ✅ $*"
+}
+
+# Check if container exists and is running
+check_container() {
+    if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+        log_error "Container $CONTAINER_NAME is not running"
+        return 1
+    fi
+    return 0
+}
+
+# Get last sync timestamp from Supabase (using local Python)
+get_last_sync_timestamp() {
+    local client="$1"
+
+    python3 -c "
+import asyncpg
+import asyncio
+import os
+
+async def get_timestamp():
+    try:
+        conn = await asyncpg.connect('$DATABASE_URL')
+        result = await conn.fetchval('''
+            SELECT last_sync_at
+            FROM sync_metadata.client_deployments
+            WHERE client_name = \$1
+        ''', '$client')
+        await conn.close()
+        return result.isoformat() if result else '1970-01-01T00:00:00'
+    except Exception as e:
+        print('1970-01-01T00:00:00', flush=True)  # Fallback on error
+
+print(asyncio.run(get_timestamp()), flush=True)
+" || echo "1970-01-01T00:00:00"
+}
+
+# Checkpoint SQLite WAL for consistent snapshot
+checkpoint_wal() {
+    log_info "Checkpointing SQLite WAL..."
+
+    docker exec "$CONTAINER_NAME" python3 -c "
+import sqlite3
+conn = sqlite3.connect('$SQLITE_PATH')
+conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+conn.close()
+print('WAL checkpointed')
+" || {
+        log_error "Failed to checkpoint WAL"
+        return 1
+    }
+
+    log_success "WAL checkpointed"
+    return 0
+}
+
+# Get row count for a table
+get_row_count() {
+    local table="$1"
+    local since_timestamp="$2"
+
+    docker exec "$CONTAINER_NAME" python3 -c "
+import sqlite3
+from datetime import datetime
+
+conn = sqlite3.connect('$SQLITE_PATH')
+cursor = conn.cursor()
+
+# Check if table has updated_at column
+cursor.execute('PRAGMA table_info(\"$table\")')
+columns = [row[1] for row in cursor.fetchall()]
+has_updated_at = 'updated_at' in columns
+
+if has_updated_at:
+    # Convert ISO timestamp to Unix epoch (Open WebUI uses Unix timestamps)
+    since_dt = datetime.fromisoformat('$since_timestamp'.replace('Z', '+00:00'))
+    since_epoch = int(since_dt.timestamp())
+    cursor.execute('SELECT COUNT(*) FROM \"$table\" WHERE updated_at > ?', (since_epoch,))
+else:
+    # No updated_at column - sync entire table
+    cursor.execute('SELECT COUNT(*) FROM \"$table\"')
+
+count = cursor.fetchone()[0]
+conn.close()
+print(count)
+" || echo "0"
+}
+
+# Export table data from SQLite
+export_table_data() {
+    local table="$1"
+    local since_timestamp="$2"
+
+    docker exec "$CONTAINER_NAME" python3 -c "
+import sqlite3
+import json
+from datetime import datetime
+
+conn = sqlite3.connect('$SQLITE_PATH')
+conn.row_factory = sqlite3.Row
+cursor = conn.cursor()
+
+# Check if table has updated_at column
+cursor.execute('PRAGMA table_info(\"$table\")')
+columns = [row[1] for row in cursor.fetchall()]
+has_updated_at = 'updated_at' in columns
+
+if has_updated_at:
+    # Convert ISO timestamp to Unix epoch
+    since_dt = datetime.fromisoformat('$since_timestamp'.replace('Z', '+00:00'))
+    since_epoch = int(since_dt.timestamp())
+    cursor.execute('SELECT * FROM \"$table\" WHERE updated_at > ? LIMIT $BATCH_SIZE', (since_epoch,))
+else:
+    # No updated_at column - sync entire table (limited by BATCH_SIZE)
+    cursor.execute('SELECT * FROM \"$table\" LIMIT $BATCH_SIZE')
+
+rows = []
+for row in cursor:
+    rows.append(dict(row))
+
+conn.close()
+print(json.dumps(rows), flush=True)
+"
+}
+
+# Sync a single table
+sync_table() {
+    local table="$1"
+    local since_timestamp="$2"
+
+    log_info "Syncing table: $table"
+
+    # Get row count
+    local total_rows
+    total_rows=$(get_row_count "$table" "$since_timestamp")
+
+    if [[ "$total_rows" -eq 0 ]]; then
+        log_info "No changes in $table since $since_timestamp"
+        return 0
+    fi
+
+    log_info "Found $total_rows rows to sync in $table"
+
+    # Export data from SQLite
+    local json_data
+    json_data=$(export_table_data "$table" "$since_timestamp")
+
+    if [[ -z "$json_data" ]] || [[ "$json_data" == "[]" ]]; then
+        log_info "No rows exported from $table"
+        return 0
+    fi
+
+    # Count exported rows
+    local row_count
+    row_count=$(echo "$json_data" | python3 -c "import sys, json; print(len(json.load(sys.stdin)))")
+
+    if [[ "$row_count" -eq 0 ]]; then
+        log_info "No rows to process from $table"
+        return 0
+    fi
+
+    log_info "Processing $row_count rows from $table..."
+
+    # Write JSON to temp file
+    local temp_file
+    temp_file=$(mktemp)
+    echo "$json_data" > "$temp_file"
+
+    # Import to Supabase (using local Python with asyncpg)
+    local result
+    result=$(python3 <<PYEOF
+import asyncpg
+import asyncio
+import json
+import sys
+from datetime import datetime
+
+async def sync_rows():
+    # Read JSON data from file
+    with open('$temp_file', 'r') as f:
+        rows = json.load(f)
+
+    conn = await asyncpg.connect('$DATABASE_URL')
+
+    synced = 0
+    failed = 0
+
+    table_name = '$table'
+    client_name = '$CLIENT_NAME'
+
+    # Get PostgreSQL column types for this table
+    schema_query = '''
+        SELECT column_name, data_type, udt_name
+        FROM information_schema.columns
+        WHERE table_schema = \$1 AND table_name = \$2
+        ORDER BY ordinal_position
+    '''
+
+    schema_rows = await conn.fetch(schema_query, client_name, table_name)
+
+    # Build type mapping: column_name -> (data_type, udt_name)
+    column_types = {row['column_name']: (row['data_type'], row['udt_name']) for row in schema_rows}
+
+    for row in rows:
+        try:
+            # Get column names and convert values based on PostgreSQL types
+            columns = list(row.keys())
+            values = []
+
+            for col in columns:
+                val = row[col]
+
+                # Skip conversion if column not in schema (shouldn't happen)
+                if col not in column_types:
+                    values.append(val)
+                    continue
+
+                data_type, udt_name = column_types[col]
+
+                # Type conversion logic
+                if val is None:
+                    # NULL values pass through
+                    values.append(val)
+
+                elif data_type == 'boolean' or udt_name == 'bool':
+                    # Convert SQLite INTEGER (0/1) to Python bool
+                    if isinstance(val, int):
+                        values.append(bool(val))
+                    else:
+                        values.append(val)
+
+                elif data_type in ('timestamp without time zone', 'timestamp with time zone') or udt_name in ('timestamp', 'timestamptz'):
+                    # Convert SQLite TEXT timestamp to Python datetime
+                    if isinstance(val, str):
+                        # Try parsing various timestamp formats
+                        try:
+                            # Format: "2025-09-28 03:37:37"
+                            values.append(datetime.strptime(val, '%Y-%m-%d %H:%M:%S'))
+                        except ValueError:
+                            try:
+                                # ISO format with T separator
+                                values.append(datetime.fromisoformat(val.replace('Z', '+00:00')))
+                            except ValueError:
+                                # If parsing fails, pass through and let asyncpg handle it
+                                values.append(val)
+                    elif isinstance(val, (int, float)):
+                        # Unix timestamp (epoch seconds)
+                        values.append(datetime.fromtimestamp(val))
+                    else:
+                        values.append(val)
+
+                elif data_type == 'date':
+                    # Convert SQLite TEXT date to Python date
+                    if isinstance(val, str):
+                        try:
+                            values.append(datetime.strptime(val, '%Y-%m-%d').date())
+                        except ValueError:
+                            values.append(val)
+                    else:
+                        values.append(val)
+
+                else:
+                    # All other types pass through (text, integer, uuid, json, etc.)
+                    values.append(val)
+
+            # Build INSERT ... ON CONFLICT DO UPDATE query
+            placeholders = ', '.join(['\$' + str(i+1) for i in range(len(columns))])
+            cols_str = ', '.join([f'"{col}"' for col in columns])
+
+            # Upsert with properly quoted identifiers
+            query = f'''
+                INSERT INTO "{client_name}"."{table_name}" ({cols_str})
+                VALUES ({placeholders})
+                ON CONFLICT (id) DO UPDATE
+                SET {', '.join([f'"{col}" = EXCLUDED."{col}"' for col in columns if col != 'id'])}
+            '''
+
+            await conn.execute(query, *values)
+            synced += 1
+
+        except Exception as e:
+            failed += 1
+            # Log error but continue
+            print(f'ERROR syncing row in {table_name}: {str(e)}', file=sys.stderr, flush=True)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+
+    await conn.close()
+    print(f'{synced},{failed}', flush=True)
+
+asyncio.run(sync_rows())
+PYEOF
+)
+
+    # Clean up temp file
+    rm -f "$temp_file"
+
+    # Parse results (format: "synced,failed")
+    local rows_synced
+    local rows_failed
+
+    # Extract last line with the counts
+    result=$(echo "$result" | tail -1)
+
+    if [[ "$result" =~ ^[0-9]+,[0-9]+$ ]]; then
+        rows_synced=$(echo "$result" | cut -d',' -f1)
+        rows_failed=$(echo "$result" | cut -d',' -f2)
+    else
+        log_error "Failed to parse sync results for $table: $result"
+        return 1
+    fi
+
+    log_success "Synced $rows_synced rows from $table (failed: $rows_failed)"
+
+    return 0
+}
+
+# Update last_sync_at timestamp
+update_sync_timestamp() {
+    local status="${1:-success}"
+
+    python3 -c "
+import asyncpg
+import asyncio
+
+async def update_timestamp():
+    try:
+        conn = await asyncpg.connect('$DATABASE_URL')
+
+        # Set session context for RLS policy (if enabled)
+        await conn.execute(\"SET app.current_client_name = '$CLIENT_NAME'\")
+
+        await conn.execute('''
+            UPDATE sync_metadata.client_deployments
+            SET last_sync_at = NOW(),
+                last_sync_status = \$1
+            WHERE client_name = \$2
+        ''', '$status', '$CLIENT_NAME')
+        await conn.close()
+        return True
+    except Exception as e:
+        print(f'Error updating timestamp: {e}', flush=True)
+        import traceback
+        traceback.print_exc()
+        return False
+
+asyncio.run(update_timestamp())
+" || log_error "Failed to update sync timestamp"
+}
+
+# ============================================================================
+# MAIN SYNC LOGIC
+# ============================================================================
+
+main() {
+    log_info "Starting sync for client: $CLIENT_NAME"
+
+    # Create sync job entry
+    local job_id
+    local sync_type
+    if [[ "$FULL_SYNC" == "--full" ]]; then
+        sync_type="full"
+    else
+        sync_type="incremental"
+    fi
+
+    job_id=$(python3 <<PYEOF
+import asyncpg
+import asyncio
+import uuid
+
+async def create_job():
+    conn = await asyncpg.connect('$DATABASE_URL')
+    job_id = str(uuid.uuid4())
+
+    # Set session context for RLS policy
+    await conn.execute("SET app.current_client_name = '$CLIENT_NAME'")
+
+    # Get deployment_id for this client
+    deployment_id = await conn.fetchval('''
+        SELECT deployment_id
+        FROM sync_metadata.client_deployments
+        WHERE client_name = \$1
+    ''', '$CLIENT_NAME')
+
+    # Create job entry
+    await conn.execute('''
+        INSERT INTO sync_metadata.sync_jobs
+        (job_id, deployment_id, client_name, started_at, status, sync_type, triggered_by, tables_total)
+        VALUES (\$1, \$2, \$3, NOW(), 'running', \$4, \$5, \$6)
+    ''', job_id, deployment_id, '$CLIENT_NAME', '$sync_type', '$TRIGGERED_BY', ${#TABLES[@]})
+
+    await conn.close()
+    print(job_id)
+
+asyncio.run(create_job())
+PYEOF
+)
+
+    if [[ -z "$job_id" ]]; then
+        log_error "Failed to create sync job entry"
+        exit 1
+    fi
+
+    log_info "Created sync job: $job_id"
+
+    # Check container
+    if ! check_container; then
+        log_error "Cannot sync - container not available"
+        # Update job as failed
+        python3 <<PYEOF
+import asyncpg
+import asyncio
+
+async def fail_job():
+    conn = await asyncpg.connect('$DATABASE_URL')
+    await conn.execute("SET app.current_client_name = '$CLIENT_NAME'")
+    await conn.execute('''
+        UPDATE sync_metadata.sync_jobs
+        SET status = 'failed',
+            completed_at = NOW(),
+            error_message = 'Container not available'
+        WHERE job_id = \$1
+    ''', '$job_id')
+    await conn.close()
+
+asyncio.run(fail_job())
+PYEOF
+        update_sync_timestamp "failed"
+        exit 1
+    fi
+
+    # Get last sync timestamp
+    local last_sync
+    if [[ "$FULL_SYNC" == "--full" ]]; then
+        log_info "Full sync requested - syncing all data"
+        last_sync="1970-01-01T00:00:00"
+    else
+        last_sync=$(get_last_sync_timestamp "$CLIENT_NAME")
+        log_info "Incremental sync since: $last_sync"
+    fi
+
+    # Checkpoint WAL
+    if ! checkpoint_wal; then
+        log_error "WAL checkpoint failed"
+        # Update job as failed
+        python3 <<PYEOF
+import asyncpg
+import asyncio
+
+async def fail_job():
+    conn = await asyncpg.connect('$DATABASE_URL')
+    await conn.execute("SET app.current_client_name = '$CLIENT_NAME'")
+    await conn.execute('''
+        UPDATE sync_metadata.sync_jobs
+        SET status = 'failed',
+            completed_at = NOW(),
+            error_message = 'WAL checkpoint failed'
+        WHERE job_id = \$1
+    ''', '$job_id')
+    await conn.close()
+
+asyncio.run(fail_job())
+PYEOF
+        update_sync_timestamp "failed"
+        exit 1
+    fi
+
+    # Sync each table
+    local total_tables_synced=0
+    local total_tables_failed=0
+    local total_rows_synced=0
+    local total_rows_failed=0
+
+    for table in "${TABLES[@]}"; do
+        log_info "=== Starting sync for table: $table ==="
+
+        # Capture sync_table output to get row counts
+        local sync_output
+        if sync_output=$(sync_table "$table" "$last_sync" 2>&1); then
+            total_tables_synced=$((total_tables_synced + 1))
+
+            # Extract row counts from output
+            local rows_synced
+            local rows_failed
+            rows_synced=$(echo "$sync_output" | grep -oP "Synced \K[0-9]+" | tail -1 || echo "0")
+            rows_failed=$(echo "$sync_output" | grep -oP "failed: \K[0-9]+" | tail -1 || echo "0")
+
+            total_rows_synced=$((total_rows_synced + rows_synced))
+            total_rows_failed=$((total_rows_failed + rows_failed))
+
+            log_success "Table $table completed successfully"
+            echo "$sync_output"
+        else
+            total_tables_failed=$((total_tables_failed + 1))
+            log_error "Failed to sync table: $table"
+            echo "$sync_output" >&2
+        fi
+    done
+
+    # Update job with completion status
+    local job_status
+    if [[ "$total_tables_failed" -eq 0 ]]; then
+        job_status="success"
+    else
+        job_status="failed"
+    fi
+
+    python3 <<PYEOF
+import asyncpg
+import asyncio
+
+async def complete_job():
+    conn = await asyncpg.connect('$DATABASE_URL')
+    await conn.execute("SET app.current_client_name = '$CLIENT_NAME'")
+    await conn.execute('''
+        UPDATE sync_metadata.sync_jobs
+        SET status = \$1,
+            completed_at = NOW(),
+            tables_synced = \$2,
+            rows_synced = \$3,
+            rows_failed = \$4,
+            duration_seconds = EXTRACT(EPOCH FROM (NOW() - started_at))
+        WHERE job_id = \$5
+    ''', '$job_status', $total_tables_synced, $total_rows_synced, $total_rows_failed, '$job_id')
+    await conn.close()
+
+asyncio.run(complete_job())
+PYEOF
+
+    # Update last_sync_at timestamp
+    if [[ "$total_tables_failed" -eq 0 ]]; then
+        log_info "Updating last sync timestamp..."
+        update_sync_timestamp "success"
+        log_success "Sync complete for $CLIENT_NAME"
+        log_info "Tables synced: $total_tables_synced / ${#TABLES[@]}"
+        log_info "Rows synced: $total_rows_synced (failed: $total_rows_failed)"
+        exit 0
+    else
+        log_error "Some tables failed to sync: $total_tables_failed"
+        update_sync_timestamp "failed"
+        exit 1
+    fi
+}
+
+# Run main
+main "$@"
