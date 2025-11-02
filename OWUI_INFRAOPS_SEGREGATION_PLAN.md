@@ -26,10 +26,31 @@ git checkout -b feature/volume-mount-prototype
 |-------|-------|------|--------|
 | Phase 0: Prototype | 1 task | 2-4 hours | ✅ COMPLETE |
 | Phase 1: Volume Mounting | 5 tasks | 10-14 hours | ✅ COMPLETE|
-| Phase 2: Repository Extraction | 4 tasks | 12-16 hours | ⏸️ Waiting |
+| Phase 2: Repository Extraction | 4 tasks + 7 sub-tasks | 17.5-22 hours | 🔄 IN PROGRESS |
+| Phase 2.2: Quick-Setup Integration | 7 sub-tasks | 5.5 hours | 📋 READY |
 | Phase 3: Migration Path | 3 tasks | 8-10 hours | ⏸️ Waiting |
 | Phase 4: Documentation | 4 tasks | 6-8 hours | ⏸️ Waiting |
-| **TOTAL** | **17 tasks** | **36-50 hours** | |
+| **TOTAL** | **24 tasks** | **41.5-56 hours** | |
+
+### 🎯 Phase 2 Status
+
+**Completed (3 tasks):**
+- ✅ Task 2.1: Create standalone repository structure
+- ✅ Task 2.2: Implement central configuration (config/global.conf)
+- ✅ Updated start-template.sh for upstream image support
+
+**In Progress (7 sub-tasks - Phase 2.2):**
+- 📋 Task 2.2.1: Fix extract-default-static.sh image tag usage (CRITICAL)
+- 📋 Task 2.2.2: Update apply-branding.sh for Phase 2 directories (CRITICAL)
+- 📋 Task 2.2.3: Update branding-monitor.sh for Phase 2 (CRITICAL)
+- 📋 Task 2.2.4: Add Docker auto-install to quick-setup.sh
+- 📋 Task 2.2.5: Load global config in client-manager.sh
+- 📋 Task 2.2.6: Add image tag verification to quick-setup.sh
+- 📋 Task 2.2.7: Integration testing - fresh server setup
+
+**Remaining:**
+- ⏸️ Task 2.3: Implement shared library system (partial - config.sh/colors.sh done)
+- ⏸️ Task 2.4: Update documentation
 
 ### 🚨 Phase 0 Critical Discovery
 
@@ -813,6 +834,198 @@ docker pull "$OPENWEBUI_FULL_IMAGE"
 ```
 
 **Testing:** See `mt/tests/OWUI_INFRAOPS_SEGREGATION_TESTS.md` - Test 2.2
+
+#### Task 2.2.1: Fix extract-default-static.sh Image Tag Usage
+
+**Archon Task ID:** `a44ab250-365b-4665-95e6-88d5914bcf5b`
+**File:** `setup/lib/extract-default-static.sh`
+**Priority:** HIGH - Critical Path
+**Dependencies:** Task 2.2
+
+Update extract-default-static.sh to respect OPENWEBUI_IMAGE_TAG environment variable for image tag consistency.
+
+**Implementation:**
+- Modify lines 24-30 to check OPENWEBUI_IMAGE_TAG environment variable
+- Construct full image reference: `${OPENWEBUI_IMAGE}:${OPENWEBUI_IMAGE_TAG}`
+- Fallback to `:main` if OPENWEBUI_IMAGE_TAG not set
+- Test extraction with different tags (latest, main, release)
+
+**Success Criteria:**
+- ✅ Production servers extract from `:release` tag
+- ✅ Test servers extract from `:main` tag
+- ✅ Image tag matches server type configuration
+- ✅ No hardcoded `:main` fallback overriding environment
+
+**Testing:** See `mt/tests/OWUI_INFRAOPS_SEGREGATION_TESTS.md` - Test 2.2.1
+
+#### Task 2.2.2: Update apply-branding.sh for Phase 2 Directory Structure
+
+**Archon Task ID:** `06941263-94b0-4190-9c93-7b51fb40133e`
+**File:** `setup/scripts/asset_management/apply-branding.sh`
+**Priority:** HIGH - Critical Path
+**Dependencies:** Task 2.2
+
+Update apply-branding.sh to detect Phase 2 mode and use `/opt/openwebui/${client}/static/` instead of `/branding/`.
+
+**Implementation:**
+- Add `detect_branding_mode()` function
+- Check if static directory exists (Phase 2 volume mount)
+- Use `static/` for Phase 2, `branding/` for Phase 1
+- Update `save_to_host_mode()` function (line ~168)
+- Load global config for BASE_DIR path
+
+**Success Criteria:**
+- ✅ Phase 2 deployments save branding to `static/` directory
+- ✅ Phase 1 deployments continue using `branding/` directory
+- ✅ Branding persists across container restarts (Phase 2)
+- ✅ No breaking changes to existing Phase 1 deployments
+
+**Testing:** See `mt/tests/OWUI_INFRAOPS_SEGREGATION_TESTS.md` - Test 2.2.2
+
+#### Task 2.2.3: Update branding-monitor.sh for Phase 2 Volume Mounts
+
+**Archon Task ID:** `13f966f1-9328-48c2-bb8f-d7f3865066d3`
+**File:** `setup/services/branding-monitor.sh`
+**Priority:** HIGH - Critical Path
+**Dependencies:** Task 2.2
+
+Update branding-monitor service to detect Phase 2 volume mounts and skip injection.
+
+**Implementation:**
+- Update `has_branding()` to check both `static/` and `branding/` directories
+- Return mode (phase1/phase2) along with path
+- Update `inject_branding()` to skip injection for Phase 2
+- Log that volume mount makes branding automatic for Phase 2
+- Keep injection for Phase 1 deployments
+
+**Success Criteria:**
+- ✅ Phase 2 containers don't trigger branding injection
+- ✅ Phase 1 containers continue receiving injections
+- ✅ Service logs clearly indicate mode detected
+- ✅ No unnecessary docker cp operations for Phase 2
+
+**Testing:** See `mt/tests/OWUI_INFRAOPS_SEGREGATION_TESTS.md` - Test 2.2.3
+
+#### Task 2.2.4: Add Docker Auto-Install to quick-setup.sh
+
+**Archon Task ID:** `f414e87b-6821-4a2b-8260-3820a27f63d2`
+**File:** `setup/quick-setup.sh`
+**Priority:** MEDIUM - Enhancement
+**Dependencies:** None (parallel with 2.2.1-2.2.3)
+
+Add Docker installation check and auto-install to quick-setup.sh for true one-command setup.
+
+**Implementation:**
+- Add new step 0.5 after apt locks check (after line 78)
+- Check if docker command exists
+- Install Docker using official get.docker.com script if missing
+- Start and enable Docker service
+- Verify Docker daemon is running
+- Update step numbers (1/9 → 1/10, etc.)
+
+**Success Criteria:**
+- ✅ Script works on fresh Ubuntu droplet with no Docker
+- ✅ Docker installs automatically if needed
+- ✅ Docker daemon verified running before proceeding
+- ✅ Clean error message if Docker installation fails
+- ✅ No changes if Docker already installed
+
+**Testing:** See `mt/tests/OWUI_INFRAOPS_SEGREGATION_TESTS.md` - Test 2.2.4
+
+#### Task 2.2.5: Load Global Config in client-manager.sh
+
+**Archon Task ID:** `521af3f1-e606-4f03-bf0b-9dd6b0494fc9`
+**File:** `client-manager.sh`
+**Priority:** MEDIUM - Enhancement
+**Dependencies:** Task 2.2, Task 2.3 (partial)
+
+Update client-manager.sh to load global configuration and use centralized paths.
+
+**Implementation:**
+- Source `setup/lib/config.sh` at startup (after line 6)
+- Call `load_global_config` with error handling
+- Replace hardcoded `/opt/openwebui` with `${BASE_DIR}`
+- Use library functions where applicable
+- Add fallback to hardcoded values if config fails
+
+**Success Criteria:**
+- ✅ client-manager uses BASE_DIR from config
+- ✅ All client operations use centralized paths
+- ✅ Graceful degradation if config unavailable
+- ✅ No breaking changes to functionality
+- ✅ Config values override hardcoded defaults
+
+**Testing:** See `mt/tests/OWUI_INFRAOPS_SEGREGATION_TESTS.md` - Test 2.2.5
+
+#### Task 2.2.6: Add Image Tag Verification to quick-setup.sh
+
+**Archon Task ID:** `a2280913-c396-43d8-ba6b-071f7d183ad9`
+**File:** `setup/quick-setup.sh`
+**Priority:** LOW - Enhancement
+**Dependencies:** Task 2.2.1
+
+Add verification step to quick-setup.sh to confirm correct image tag was extracted.
+
+**Implementation:**
+- Add step 8.6.5 after extract-default-static.sh (after line 456)
+- Check extracted image tag using `docker images`
+- Compare against DOCKER_IMAGE_TAG variable
+- Display expected vs actual tags
+- Warn if mismatch detected (non-fatal)
+
+**Success Criteria:**
+- ✅ Verification runs after asset extraction
+- ✅ Clear output showing expected and actual tags
+- ✅ Warning displayed if mismatch found
+- ✅ Non-blocking (doesn't fail setup)
+- ✅ Helps catch configuration issues early
+
+**Testing:** See `mt/tests/OWUI_INFRAOPS_SEGREGATION_TESTS.md` - Test 2.2.6
+
+#### Task 2.2.7: Integration Testing - Fresh Server Setup
+
+**Archon Task ID:** `3d3e2cc8-2822-42de-9f58-da8602672a3c`
+**Assignee:** User
+**Priority:** HIGH - Validation
+**Dependencies:** Tasks 2.2.1-2.2.6 (all previous sub-tasks)
+
+Test complete quick-setup workflow on fresh Digital Ocean droplets for both production and test server types.
+
+**Test Scenarios:**
+1. **Test 1:** Fresh production server (no Docker) - verify :release tag
+2. **Test 2:** Fresh test server (no Docker) - verify :main tag
+3. **Test 3:** Server with Docker pre-installed - verify no Docker reinstall
+4. **Test 4:** Client deployment with branding - verify persistence
+5. **Test 5:** Image tag consistency verification across all components
+
+**Success Criteria:**
+- ✅ Production server uses `:release` tag throughout
+- ✅ Test server uses `:main` tag throughout
+- ✅ Docker installs automatically if needed
+- ✅ Client deployments work correctly
+- ✅ Branding persists across container restarts (Phase 2)
+- ✅ client-manager.sh functions properly with all operations
+
+**Testing:** See `mt/tests/OWUI_INFRAOPS_SEGREGATION_TESTS.md` - Test 2.2.7
+
+**Task Execution Order:**
+```
+Parallel (Critical Path):
+├─ Task 2.2.1 (extract-default-static.sh) ─┐
+├─ Task 2.2.2 (apply-branding.sh)          ├─→ Task 2.2.7
+└─ Task 2.2.3 (branding-monitor.sh)       ─┘    (Testing)
+                                             ↑
+Parallel (Enhancements):                     │
+├─ Task 2.2.4 (Docker auto-install)      ────┤
+├─ Task 2.2.5 (client-manager config)    ────┤
+└─ Task 2.2.6 (verification)             ────┘
+```
+
+**Estimated Time:**
+- Critical path (2.2.1-2.2.3): ~2 hours
+- Enhancements (2.2.4-2.2.6): ~1.5 hours
+- Testing (2.2.7): ~2 hours
+- **Total: ~5.5 hours**
 
 #### Task 2.3: Implement Shared Library System (REFACTOR_PLAN.md Phase 1)
 
