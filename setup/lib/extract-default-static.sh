@@ -6,8 +6,12 @@
 # Usage: ./extract-default-static.sh [IMAGE] [TARGET_DIR]
 #
 # Arguments:
-#   IMAGE       - Docker image to extract from (default: ghcr.io/open-webui/open-webui:main)
+#   IMAGE       - Docker image to extract from (default: ghcr.io/open-webui/open-webui:latest)
 #   TARGET_DIR  - Directory to extract assets to (default: /opt/openwebui/defaults/static)
+#
+# Environment Variables:
+#   OPENWEBUI_IMAGE       - Base image repository (default: ghcr.io/open-webui/open-webui)
+#   OPENWEBUI_IMAGE_TAG   - Image tag (default: latest)
 #
 # This script creates a temporary container, extracts static assets, and cleans up.
 # It's idempotent and safe to run multiple times.
@@ -22,7 +26,10 @@
 set -euo pipefail
 
 # Default values
-DEFAULT_IMAGE="${OPENWEBUI_IMAGE:-ghcr.io/open-webui/open-webui:main}"
+# Use upstream image with tag from environment or default to 'latest' (stable)
+OPENWEBUI_IMAGE_BASE="${OPENWEBUI_IMAGE:-ghcr.io/open-webui/open-webui}"
+OPENWEBUI_IMAGE_TAG="${OPENWEBUI_IMAGE_TAG:-latest}"
+DEFAULT_IMAGE="${OPENWEBUI_IMAGE_BASE}:${OPENWEBUI_IMAGE_TAG}"
 DEFAULT_TARGET_DIR="/opt/openwebui/defaults/static"
 
 # Parse arguments
