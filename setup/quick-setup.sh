@@ -3,14 +3,14 @@
 # Run this as root on a fresh Digital Ocean droplet
 #
 # Usage Option 1 (auto-copy SSH key from root):
-#   curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui/main/mt/setup/quick-setup.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui-infrastructure/main/setup/quick-setup.sh | bash
 #
 # Usage Option 2 (provide SSH key):
-#   curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui/main/mt/setup/quick-setup.sh | bash -s -- "YOUR_SSH_PUBLIC_KEY"
+#   curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui-infrastructure/main/setup/quick-setup.sh | bash -s -- "YOUR_SSH_PUBLIC_KEY"
 #
 # Usage Option 3 (provide SSH key + server type):
-#   curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui/main/mt/setup/quick-setup.sh | bash -s -- "YOUR_SSH_PUBLIC_KEY" "production"
-#   curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui/main/mt/setup/quick-setup.sh | bash -s -- "YOUR_SSH_PUBLIC_KEY" "test"
+#   curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui-infrastructure/main/setup/quick-setup.sh | bash -s -- "YOUR_SSH_PUBLIC_KEY" "production"
+#   curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui-infrastructure/main/setup/quick-setup.sh | bash -s -- "YOUR_SSH_PUBLIC_KEY" "test"
 
 set -euo pipefail
 
@@ -24,7 +24,7 @@ NC='\033[0m'
 
 # Configuration
 DEPLOY_USER="qbmgr"
-REPO_URL="https://github.com/imagicrafter/open-webui.git"
+REPO_URL="https://github.com/imagicrafter/open-webui-infrastructure.git"
 SSH_KEY="${1:-}"
 SERVER_TYPE="${2:-}"
 
@@ -38,7 +38,7 @@ if [ "$EUID" -ne 0 ]; then
     echo -e "${RED}❌ This script must be run as root${NC}"
     echo
     echo "Usage:"
-    echo "  curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui/main/mt/setup/quick-setup.sh | bash"
+    echo "  curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui-infrastructure/main/setup/quick-setup.sh | bash"
     exit 1
 fi
 
@@ -111,17 +111,17 @@ if [ -z "$SERVER_TYPE" ]; then
         echo
         echo "Usage:"
         echo -e "  ${GREEN}Test server:${NC}"
-        echo "  curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui/main/mt/setup/quick-setup.sh | bash -s -- \"\" \"test\""
+        echo "  curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui-infrastructure/main/setup/quick-setup.sh | bash -s -- \"\" \"test\""
         echo
         echo -e "  ${BLUE}Production server:${NC}"
-        echo "  curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui/main/mt/setup/quick-setup.sh | bash -s -- \"\" \"production\""
+        echo "  curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui-infrastructure/main/setup/quick-setup.sh | bash -s -- \"\" \"production\""
         echo
         echo -e "  ${YELLOW}Development server (experimental):${NC}"
-        echo "  curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui/feature/volume-mount-prototype/mt/setup/quick-setup.sh | bash -s -- \"\" \"development\""
+        echo "  curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui-infrastructure/main/setup/quick-setup.sh | bash -s -- \"\" \"development\""
         echo
         echo -e "  ${YELLOW}Or SSH to server first and run interactively:${NC}"
         echo "  ssh root@server-ip"
-        echo "  curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui/main/mt/setup/quick-setup.sh -o /tmp/setup.sh"
+        echo "  curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui-infrastructure/main/setup/quick-setup.sh -o /tmp/setup.sh"
         echo "  bash /tmp/setup.sh"
         exit 1
     fi
@@ -480,7 +480,7 @@ cat > "/home/$DEPLOY_USER/WELCOME.txt" << EOF
 Server Configuration:
   - Server Type: ${SERVER_TYPE_DISPLAY}
   - Git Branch: ${GIT_BRANCH}
-  - Docker Image: ghcr.io/imagicrafter/open-webui:${DOCKER_IMAGE_TAG}
+  - Docker Image: ghcr.io/open-webui/open-webui:${DOCKER_IMAGE_TAG}
   - User: qbmgr (sudo + docker access)
   - Repository: ~/open-webui
   - nginx directory: /opt/openwebui-nginx
@@ -529,7 +529,7 @@ echo
 echo "Configuration:"
 echo -e "  ${GREEN}✅${NC} Server Type: ${SERVER_TYPE_DISPLAY}"
 echo -e "  ${GREEN}✅${NC} Git Branch: ${GIT_BRANCH}"
-echo -e "  ${GREEN}✅${NC} Docker Image: ghcr.io/imagicrafter/open-webui:${DOCKER_IMAGE_TAG}"
+echo -e "  ${GREEN}✅${NC} Docker Image: ghcr.io/open-webui/open-webui:${DOCKER_IMAGE_TAG}"
 echo -e "  ${GREEN}✅${NC} User: qbmgr"
 echo -e "  ${GREEN}✅${NC} Groups: sudo, docker"
 echo -e "  ${GREEN}✅${NC} Repository: /home/qbmgr/open-webui"
