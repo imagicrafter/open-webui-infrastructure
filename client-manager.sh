@@ -2260,6 +2260,10 @@ manage_single_deployment() {
                     local client_dir="${BASE_DIR}/${client_id}"
                     volume_name="${container_name}-data"
 
+                    # Use image from global config
+                    local IMAGE_TAG=${OPENWEBUI_IMAGE_TAG:-latest}
+                    local IMAGE_REPO=${OPENWEBUI_IMAGE:-ghcr.io/open-webui/open-webui}
+
                     # Build docker run command based on deployment type
                     if [[ "$is_containerized" == true ]]; then
                         # Containerized nginx - use network, no port mapping
@@ -2286,7 +2290,7 @@ manage_single_deployment() {
                             -v "${client_dir}/data:/app/backend/data" \
                             -v "${client_dir}/static:/app/backend/open_webui/static" \
                             --restart unless-stopped \
-                            ghcr.io/imagicrafter/open-webui@sha256:bdf98b7bf21c32db09522d90f80715af668b2bd8c58cf9d02777940773ab7b27
+                            ${IMAGE_REPO}:${IMAGE_TAG}
                     else
                         # Host nginx - use port mapping
                         # Extract WEBUI_URL from redirect_uri (remove /oauth/google/callback)
@@ -2312,7 +2316,7 @@ manage_single_deployment() {
                             -v "${client_dir}/data:/app/backend/data" \
                             -v "${client_dir}/static:/app/backend/open_webui/static" \
                             --restart unless-stopped \
-                            ghcr.io/imagicrafter/open-webui@sha256:bdf98b7bf21c32db09522d90f80715af668b2bd8c58cf9d02777940773ab7b27
+                            ${IMAGE_REPO}:${IMAGE_TAG}
                     fi
 
                     if [ $? -eq 0 ]; then
@@ -2473,8 +2477,9 @@ manage_single_deployment() {
                     # Calculate base URL from redirect URI
                     local new_base_url="${new_redirect_uri%/oauth/google/callback}"
 
-                    # Use OPENWEBUI_IMAGE_TAG environment variable, default to 'main'
-                    local IMAGE_TAG=${OPENWEBUI_IMAGE_TAG:-main}
+                    # Use image from global config
+                    local IMAGE_TAG=${OPENWEBUI_IMAGE_TAG:-latest}
+                    local IMAGE_REPO=${OPENWEBUI_IMAGE:-ghcr.io/open-webui/open-webui}
 
                     docker run -d \
                         --name "$new_container_name" \
@@ -2494,7 +2499,7 @@ manage_single_deployment() {
                         -v "${new_client_dir}/data:/app/backend/data" \
                         -v "${new_client_dir}/static:/app/backend/open_webui/static" \
                         --restart unless-stopped \
-                        ghcr.io/imagicrafter/open-webui:${IMAGE_TAG}
+                        ${IMAGE_REPO}:${IMAGE_TAG}
 
                     if [ $? -eq 0 ]; then
                         echo "✅ Container recreated successfully!"
@@ -3767,8 +3772,9 @@ show_asset_management() {
                     docker stop "$container_name" 2>/dev/null
                     docker rm "$container_name" 2>/dev/null
 
-                    # Use OPENWEBUI_IMAGE_TAG environment variable
-                    local image_tag="${OPENWEBUI_IMAGE_TAG:-main}"
+                    # Use image from global config
+                    local image_tag="${OPENWEBUI_IMAGE_TAG:-latest}"
+                    local image_repo="${OPENWEBUI_IMAGE:-ghcr.io/open-webui/open-webui}"
 
                     # Build docker command
                     local docker_cmd="docker run -d --name ${container_name}"
@@ -3801,11 +3807,11 @@ show_asset_management() {
                     [[ -n "$client_name_env" ]] && docker_cmd="$docker_cmd -e CLIENT_NAME=\"$client_name_env\""
                     [[ -n "$database_url" ]] && docker_cmd="$docker_cmd -e DATABASE_URL=\"$database_url\""
 
-                    # Add Phase 1 bind mounts for data and static directories
+                    # Add Phase 2 volume mounts for data and static directories
                     docker_cmd="$docker_cmd -v ${client_dir}/data:/app/backend/data"
                     docker_cmd="$docker_cmd -v ${client_dir}/static:/app/backend/open_webui/static"
                     docker_cmd="$docker_cmd --restart unless-stopped"
-                    docker_cmd="$docker_cmd ghcr.io/imagicrafter/open-webui:${image_tag}"
+                    docker_cmd="$docker_cmd ${image_repo}:${image_tag}"
 
                     # Execute docker command
                     echo "Creating container with new name..."
