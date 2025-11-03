@@ -417,6 +417,54 @@ create_new_deployment() {
         oauth_domains="martins.net"
     fi
 
+    # Select Open WebUI image version
+    echo
+    echo "╔════════════════════════════════════════╗"
+    echo "║    Select Open WebUI Image Version    ║"
+    echo "╚════════════════════════════════════════╝"
+    echo
+    echo "Choose which Open WebUI version to deploy:"
+    echo
+    echo "  1) latest  (recommended - stable release)"
+    echo "  2) main    (bleeding edge - latest development)"
+    echo "  3) custom  (enter specific version tag)"
+    echo
+    echo -n "Selection [1-3] (press Enter for latest): "
+    read version_choice
+
+    case "$version_choice" in
+        2)
+            OPENWEBUI_IMAGE_TAG="main"
+            version_desc="main (development)"
+            ;;
+        3)
+            echo -n "Enter custom version tag (e.g., v0.5.1, git-abc123): "
+            read custom_tag
+            if [[ -z "$custom_tag" ]]; then
+                echo "❌ No tag provided, using default 'latest'"
+                OPENWEBUI_IMAGE_TAG="latest"
+                version_desc="latest (stable)"
+            else
+                OPENWEBUI_IMAGE_TAG="$custom_tag"
+                version_desc="custom: $custom_tag"
+            fi
+            ;;
+        ""|1)
+            OPENWEBUI_IMAGE_TAG="latest"
+            version_desc="latest (stable)"
+            ;;
+        *)
+            echo "⚠️  Invalid selection, using default 'latest'"
+            OPENWEBUI_IMAGE_TAG="latest"
+            version_desc="latest (stable)"
+            ;;
+    esac
+
+    # Export for start-template.sh to use
+    export OPENWEBUI_IMAGE_TAG
+
+    echo "✓ Selected: $version_desc"
+
     # Generate WEBUI_SECRET_KEY for OAuth session encryption
     webui_secret_key=$(openssl rand -base64 32)
 
@@ -447,6 +495,7 @@ create_new_deployment() {
     else
         echo "Port:            $port"
     fi
+    echo "Image Version:   ghcr.io/open-webui/open-webui:${OPENWEBUI_IMAGE_TAG}"
     echo "Environment:     $environment"
     echo "Redirect URI:    $redirect_uri"
     echo "OAuth Domains:   $oauth_domains"
