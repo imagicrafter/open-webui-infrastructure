@@ -68,13 +68,13 @@ The setup script supports two server types:
    ```bash
    # Production server (stable, recommended for clients)
    ssh root@YOUR_DROPLET_IP
-   curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui/main/mt/setup/quick-setup.sh | bash -s -- "" "production"
+   curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui-infrastructure/main/setup/quick-setup.sh | bash -s -- "" "production"
    ```
 
    ```bash
    # Test server (latest development code)
    ssh root@YOUR_DROPLET_IP
-   curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui/main/mt/setup/quick-setup.sh | bash -s -- "" "test"
+   curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui-infrastructure/main/setup/quick-setup.sh | bash -s -- "" "test"
    ```
 
    **What the parameters mean:**
@@ -87,7 +87,7 @@ The setup script supports two server types:
 
    ```bash
    ssh root@YOUR_DROPLET_IP
-   curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui/main/mt/setup/quick-setup.sh -o /tmp/setup.sh
+   curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui-infrastructure/main/setup/quick-setup.sh -o /tmp/setup.sh
    bash /tmp/setup.sh
    ```
 
@@ -106,10 +106,10 @@ The setup script supports two server types:
    ssh root@YOUR_DROPLET_IP
 
    # Production server with custom SSH key
-   curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui/main/mt/setup/quick-setup.sh | bash -s -- "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ... user@host" "production"
+   curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui-infrastructure/main/setup/quick-setup.sh | bash -s -- "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ... user@host" "production"
 
    # Test server with custom SSH key
-   curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui/main/mt/setup/quick-setup.sh | bash -s -- "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ... user@host" "test"
+   curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui-infrastructure/main/setup/quick-setup.sh | bash -s -- "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ... user@host" "test"
    ```
 
 4. **Exit and SSH as qbmgr**
@@ -151,8 +151,8 @@ The setup script automatically configures your server to use the appropriate Doc
 
 | Server Type | OPENWEBUI_IMAGE_TAG | Docker Image | Updates |
 |-------------|---------------------|--------------|---------|
-| **Test** | `main` | `ghcr.io/imagicrafter/open-webui:main` | Latest development code |
-| **Production** | `release` | `ghcr.io/imagicrafter/open-webui:release` | Stable, tested releases only |
+| **Test** | `main` | `ghcr.io/open-webui/open-webui:main` | Latest development code |
+| **Production** | `release` | `ghcr.io/open-webui/open-webui:release` | Stable, tested releases only |
 
 **How it works:**
 - The `OPENWEBUI_IMAGE_TAG` environment variable is set in `~/.bashrc`
@@ -612,22 +612,22 @@ ssh root@YOUR_DROPLET_IP
 
 **2. Run cleanup script:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui/main/mt/setup/cleanup-for-rebuild.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui-infrastructure/main/setup/scripts/cleanup-for-rebuild.sh | sudo bash
 ```
 
 Or download and run locally:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui/main/mt/setup/cleanup-for-rebuild.sh -o /tmp/cleanup.sh
+curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui-infrastructure/main/setup/scripts/cleanup-for-rebuild.sh -o /tmp/cleanup.sh
 sudo bash /tmp/cleanup.sh
 ```
 
 **3. Re-run quick setup:**
 ```bash
 # Production server
-curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui/main/mt/setup/quick-setup.sh | bash -s -- "" "production"
+curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui-infrastructure/main/setup/quick-setup.sh | bash -s -- "" "production"
 
 # Test server
-curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui/main/mt/setup/quick-setup.sh | bash -s -- "" "test"
+curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui-infrastructure/main/setup/quick-setup.sh | bash -s -- "" "test"
 ```
 
 ### What Gets Removed
@@ -669,12 +669,12 @@ The script will prompt you for optional removals:
 ssh root@104.236.102.26
 
 # 2. Run cleanup
-curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui/main/mt/setup/cleanup-for-rebuild.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui-infrastructure/main/setup/scripts/cleanup-for-rebuild.sh | sudo bash
 
 # 3. Optionally remove SSL certificates when prompted (y/N)
 
 # 4. Exit and re-run quick setup
-curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui/main/mt/setup/quick-setup.sh | bash -s -- "" "test"
+curl -fsSL https://raw.githubusercontent.com/imagicrafter/open-webui-infrastructure/main/setup/quick-setup.sh | bash -s -- "" "test"
 
 # 5. Exit and SSH as qbmgr
 exit
