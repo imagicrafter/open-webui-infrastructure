@@ -32,19 +32,46 @@ git checkout -b feature/volume-mount-prototype
 | Phase 4: Documentation | 4 tasks | 6-8 hours | ⏸️ Waiting |
 | **TOTAL** | **24 tasks** | **41.5-56 hours** | |
 
+### 🚨 CRITICAL CLARIFICATION: Two Separate Concerns
+
+**This plan previously conflated two separate configuration choices:**
+
+1. **Infrastructure Repository Version** (quick-setup.sh parameter)
+   - `"test"` → Uses latest infrastructure code from main branch
+   - `"production"` → Uses stable infrastructure code
+   - **Does NOT** determine Open WebUI Docker image version
+
+2. **Open WebUI Docker Image Version** (client-manager.sh deployment choice)
+   - `latest` → Stable Open WebUI release (recommended)
+   - `main` → Bleeding edge Open WebUI development
+   - `v0.5.1` → Specific Open WebUI version tag
+   - **User chooses this during EACH client deployment**
+
+**Example:**
+```bash
+# Step 1: Setup infrastructure (test or production infrastructure code)
+curl -fsSL .../quick-setup.sh | bash -s -- "" "test"
+
+# Step 2: Deploy client (choose Open WebUI version per client)
+./client-manager.sh
+> Create New Deployment
+> Select Open WebUI version: latest ← USER CHOOSES HERE
+```
+
 ### 🎯 Phase 2 Status
 
-**Completed (3 tasks):**
+**Completed (4 tasks):**
 - ✅ Task 2.1: Create standalone repository structure
 - ✅ Task 2.2: Implement central configuration (config/global.conf)
+- ✅ Task 2.2.5: Load global config in client-manager.sh
 - ✅ Updated start-template.sh for upstream image support
 
 **In Progress (7 sub-tasks - Phase 2.2):**
-- 📋 Task 2.2.1: Fix extract-default-static.sh image tag usage (CRITICAL)
+- 📋 Task 2.2.1: Fix extract-default-static.sh to use upstream image (CRITICAL)
 - 📋 Task 2.2.2: Update apply-branding.sh for Phase 2 directories (CRITICAL)
 - 📋 Task 2.2.3: Update branding-monitor.sh for Phase 2 (CRITICAL)
+- 📋 Task 2.2.8: Add Open WebUI version selection to client-manager.sh (NEW - CRITICAL)
 - 📋 Task 2.2.4: Add Docker auto-install to quick-setup.sh
-- 📋 Task 2.2.5: Load global config in client-manager.sh
 - 📋 Task 2.2.6: Add image tag verification to quick-setup.sh
 - 📋 Task 2.2.7: Integration testing - fresh server setup
 
@@ -709,8 +736,10 @@ open-webui-infrastructure/
 OPENWEBUI_IMAGE="${OPENWEBUI_IMAGE:-ghcr.io/open-webui/open-webui}"
 
 # Image tag to use
-# Options: main, latest, v0.1.0, etc.
-OPENWEBUI_IMAGE_TAG="${OPENWEBUI_IMAGE_TAG:-main}"
+# Options: latest (stable), main (dev), v0.5.1 (specific version)
+# NOTE: This should be set during CLIENT DEPLOYMENT, not during infrastructure setup
+# Default to latest (stable) if not specified
+OPENWEBUI_IMAGE_TAG="${OPENWEBUI_IMAGE_TAG:-latest}"
 
 # Full image reference (constructed from above)
 OPENWEBUI_FULL_IMAGE="${OPENWEBUI_IMAGE}:${OPENWEBUI_IMAGE_TAG}"

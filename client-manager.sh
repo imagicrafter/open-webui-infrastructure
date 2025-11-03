@@ -5,6 +5,36 @@
 # Get the directory of this script
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
+# =============================================================================
+# Load Global Configuration
+# =============================================================================
+# Load centralized configuration from config/global.conf via setup/lib/config.sh
+if [ -f "${SCRIPT_DIR}/setup/lib/config.sh" ]; then
+    source "${SCRIPT_DIR}/setup/lib/config.sh"
+
+    # Load global configuration
+    if load_global_config 2>/dev/null; then
+        echo "✓ Loaded global configuration from: ${REPO_ROOT}/config/global.conf"
+    else
+        echo "⚠ Warning: Could not load global configuration, using fallback defaults"
+        # Set fallback defaults if config loading fails
+        BASE_DIR="${BASE_DIR:-/opt/openwebui}"
+        OPENWEBUI_IMAGE_TAG="${OPENWEBUI_IMAGE_TAG:-main}"
+    fi
+else
+    echo "⚠ Warning: Config library not found, using fallback defaults"
+    # Set fallback defaults if library doesn't exist
+    BASE_DIR="${BASE_DIR:-/opt/openwebui}"
+    OPENWEBUI_IMAGE_TAG="${OPENWEBUI_IMAGE_TAG:-main}"
+fi
+
+# Ensure BASE_DIR is set (final fallback)
+BASE_DIR="${BASE_DIR:-/opt/openwebui}"
+
+# Export for use in subprocesses
+export BASE_DIR
+export OPENWEBUI_IMAGE_TAG
+
 show_help() {
     echo "Multi-Client Open WebUI Management"
     echo "=================================="
@@ -2178,7 +2208,7 @@ manage_single_deployment() {
 
                     # Extract CLIENT_ID from container name for Phase 1 bind mounts
                     local client_id="${container_name#openwebui-}"
-                    local client_dir="/opt/openwebui/${client_id}"
+                    local client_dir="${BASE_DIR}/${client_id}"
                     volume_name="${container_name}-data"
 
                     # Build docker run command based on deployment type
@@ -2359,9 +2389,9 @@ manage_single_deployment() {
 
                     # Phase 1: Use client directories instead of Docker volumes
                     local old_client_id="${container_name#openwebui-}"
-                    local old_client_dir="/opt/openwebui/${old_client_id}"
+                    local old_client_dir="${BASE_DIR}/${old_client_id}"
                     local new_client_id="${sanitized_new_fqdn}"
-                    local new_client_dir="/opt/openwebui/${new_client_id}"
+                    local new_client_dir="${BASE_DIR}/${new_client_id}"
 
                     new_container_name="openwebui-${sanitized_new_fqdn}"
 
@@ -3677,7 +3707,7 @@ show_asset_management() {
 
                     # Extract CLIENT_ID from container name (strip "openwebui-" prefix)
                     local client_id="${container_name#openwebui-}"
-                    local client_dir="/opt/openwebui/${client_id}"
+                    local client_dir="${BASE_DIR}/${client_id}"
 
                     local volume_name="${container_name}-data"
                     local network_name=$(docker inspect "$container_name" --format '{{range .NetworkSettings.Networks}}{{.NetworkID}}{{end}}' 2>/dev/null)
