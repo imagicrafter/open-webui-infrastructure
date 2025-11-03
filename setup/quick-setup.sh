@@ -275,7 +275,7 @@ fi
 if [[ -n "$SSH_CONNECTION" ]] || [[ -n "$SSH_CLIENT" ]]; then
     # Check if this is an interactive shell
     if [[ $- == *i* ]]; then
-        cd ~/open-webui/mt 2>/dev/null && ./client-manager.sh
+        cd ~/open-webui-infrastructure 2>/dev/null && ./client-manager.sh
     fi
 fi
 BASH_PROFILE_EOF
@@ -286,7 +286,7 @@ echo -e "${GREEN}✅ Environment configured (OPENWEBUI_IMAGE_TAG=${DOCKER_IMAGE_
 
 # Step 5: Clone Open WebUI repository
 echo -e "${BLUE}[5/9] Cloning repository (branch: ${GIT_BRANCH})...${NC}"
-REPO_PATH="/home/$DEPLOY_USER/open-webui"
+REPO_PATH="/home/$DEPLOY_USER/open-webui-infrastructure"
 if [ -d "$REPO_PATH" ]; then
     echo -e "${YELLOW}Repository exists, checking out ${GIT_BRANCH} and pulling latest...${NC}"
     sudo -u "$DEPLOY_USER" git -C "$REPO_PATH" checkout "$GIT_BRANCH" || true
@@ -296,9 +296,10 @@ else
 fi
 
 # Make scripts executable
-chmod +x "$REPO_PATH/mt/client-manager.sh"
-chmod +x "$REPO_PATH/mt/nginx-container/deploy-nginx-container.sh"
-chmod +x "$REPO_PATH/mt/setup"/*.sh 2>/dev/null || true
+chmod +x "$REPO_PATH/client-manager.sh"
+chmod +x "$REPO_PATH/setup"/*.sh 2>/dev/null || true
+chmod +x "$REPO_PATH/setup/lib"/*.sh 2>/dev/null || true
+find "$REPO_PATH/setup/scripts" -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
 
 echo -e "${GREEN}✅ Repository ready at $REPO_PATH (branch: ${GIT_BRANCH})${NC}"
 
@@ -448,24 +449,24 @@ echo -e "${BLUE}[8.6/10] Extracting default static assets...${NC}"
 echo -e "${CYAN}This prepares branding assets for volume-mounted deployments${NC}"
 
 # Run extraction script as deploy user
-if sudo -u "$DEPLOY_USER" bash "${REPO_PATH}/mt/setup/lib/extract-default-static.sh"; then
+if sudo -u "$DEPLOY_USER" bash "${REPO_PATH}/setup/lib/extract-default-static.sh"; then
     echo -e "${GREEN}✅ Default assets extracted to /opt/openwebui/defaults/static${NC}"
 else
     echo -e "${YELLOW}⚠️  Default asset extraction failed${NC}"
-    echo -e "${YELLOW}   You can run manually later: bash ~/open-webui/mt/setup/lib/extract-default-static.sh${NC}"
+    echo -e "${YELLOW}   You can run manually later: bash ~/open-webui-infrastructure/setup/lib/extract-default-static.sh${NC}"
 fi
 
 # Step 8.7: Install branding monitor service
 echo -e "${BLUE}[8.7/10] Installing branding monitor service...${NC}"
 echo -e "${CYAN}This automatically restores custom branding after container restarts${NC}"
 
-if bash "${REPO_PATH}/mt/setup/services/install-branding-monitor.sh" > /tmp/branding-monitor-install.log 2>&1; then
+if bash "${REPO_PATH}/setup/services/install-branding-monitor.sh" > /tmp/branding-monitor-install.log 2>&1; then
     echo -e "${GREEN}✅ Branding monitor service installed and started${NC}"
     echo -e "${CYAN}   Service will automatically inject branding when containers restart${NC}"
 else
     echo -e "${YELLOW}⚠️  Branding monitor installation failed${NC}"
     echo -e "${YELLOW}   Check log: /tmp/branding-monitor-install.log${NC}"
-    echo -e "${YELLOW}   You can install manually later: sudo bash ~/open-webui/mt/setup/services/install-branding-monitor.sh${NC}"
+    echo -e "${YELLOW}   You can install manually later: sudo bash ~/open-webui-infrastructure/setup/services/install-branding-monitor.sh${NC}"
 fi
 
 # Step 9: Create welcome message
@@ -493,7 +494,7 @@ Server Configuration:
 Quick Start Commands:
 
 1. Start the client manager:
-   cd ~/open-webui/mt
+   cd ~/open-webui-infrastructure
    ./client-manager.sh
 
 2. Deploy nginx (option 2 in menu)
@@ -503,9 +504,9 @@ Quick Start Commands:
    docker ps
 
 Documentation:
-  - Main Guide: ~/open-webui/mt/README.md (Getting Started section)
-  - nginx Setup: ~/open-webui/mt/nginx-container/README.md
-  - Setup Details: ~/open-webui/mt/setup/README.md
+  - Main Guide: ~/open-webui-infrastructure/README.md (Getting Started section)
+  - Setup Details: ~/open-webui-infrastructure/setup/README.md
+  - Quick Start: ~/open-webui-infrastructure/setup/QUICKSTART-FRESH-DEPLOYMENT.md
 
 Security Note:
   Root SSH is still enabled. After testing qbmgr access, disable it:
@@ -532,7 +533,7 @@ echo -e "  ${GREEN}✅${NC} Git Branch: ${GIT_BRANCH}"
 echo -e "  ${GREEN}✅${NC} Docker Image: ghcr.io/open-webui/open-webui:${DOCKER_IMAGE_TAG}"
 echo -e "  ${GREEN}✅${NC} User: qbmgr"
 echo -e "  ${GREEN}✅${NC} Groups: sudo, docker"
-echo -e "  ${GREEN}✅${NC} Repository: /home/qbmgr/open-webui"
+echo -e "  ${GREEN}✅${NC} Repository: /home/qbmgr/open-webui-infrastructure"
 if [ "$COPY_FROM_ROOT" = true ]; then
     echo -e "  ${GREEN}✅${NC} SSH keys: Copied from root"
 else
