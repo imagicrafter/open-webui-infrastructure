@@ -1,6 +1,6 @@
 [Unit]
 Description=Open WebUI Branding Monitor
-Documentation=https://github.com/imagicrafter/open-webui
+Documentation=https://github.com/imagicrafter/open-webui-infrastructure
 After=docker.service
 Requires=docker.service
 PartOf=docker.service
@@ -9,7 +9,7 @@ PartOf=docker.service
 Type=simple
 User=qbmgr
 Group=qbmgr
-ExecStart=/home/qbmgr/open-webui/mt/setup/services/branding-monitor.sh
+ExecStart=/home/qbmgr/open-webui-infrastructure/setup/services/branding-monitor.sh
 Restart=always
 RestartSec=10
 StandardOutput=journal
