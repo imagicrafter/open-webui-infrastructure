@@ -5,8 +5,13 @@
 #
 # Usage: ./branding-monitor.sh
 #
-# This service listens to Docker events and automatically runs the branding
-# injection script when Open WebUI containers transition to "healthy" state.
+# This service listens to Docker events and automatically handles branding for
+# Open WebUI containers when they transition to "healthy" state.
+#
+# Phase Detection:
+#   - Phase 2: Volume-mounted static/ directory - branding persists automatically (no injection)
+#   - Phase 1: Branding/ directory - runs injection script to copy branding to container
+#
 # This ensures custom branding persists across container restarts without
 # manual intervention.
 #
@@ -21,7 +26,16 @@ set -euo pipefail
 # Configuration
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 INJECTION_SCRIPT="${SCRIPT_DIR}/../lib/inject-branding-post-startup.sh"
-OPENWEBUI_BASE="/opt/openwebui"
+
+# Load centralized configuration
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+if [ -f "$REPO_ROOT/setup/lib/config.sh" ]; then
+    source "$REPO_ROOT/setup/lib/config.sh"
+    load_global_config 2>/dev/null || true
+fi
+
+# Set defaults
+OPENWEBUI_BASE="${BASE_DIR:-/opt/openwebui}"
 LOG_FILE="/var/log/openwebui-branding-monitor.log"
 
 # Color codes for logging
@@ -72,17 +86,31 @@ get_client_id() {
     echo "${container_name#openwebui-}"
 }
 
-# Check if container has branding directory
+# Check if container has branding and detect deployment mode
+# Returns: "phase1:/path" or "phase2:/path" or exits with code 1 if no branding
 has_branding() {
     local client_id="$1"
+    local static_dir="${OPENWEBUI_BASE}/${client_id}/static"
     local branding_dir="${OPENWEBUI_BASE}/${client_id}/branding"
 
-    if [ -d "$branding_dir" ]; then
+    # Check Phase 2 first (static directory with branding files)
+    if [ -d "$static_dir" ]; then
         # Check if directory has branding files
-        if [ -f "${branding_dir}/logo.png" ] || [ -f "${branding_dir}/favicon.png" ]; then
+        if [ -f "${static_dir}/logo.png" ] || [ -f "${static_dir}/favicon.png" ]; then
+            echo "phase2:${static_dir}"
             return 0
         fi
     fi
+
+    # Check Phase 1 (branding directory)
+    if [ -d "$branding_dir" ]; then
+        # Check if directory has branding files
+        if [ -f "${branding_dir}/logo.png" ] || [ -f "${branding_dir}/favicon.png" ]; then
+            echo "phase1:${branding_dir}"
+            return 0
+        fi
+    fi
+
     return 1
 }
 
@@ -90,20 +118,39 @@ has_branding() {
 inject_branding() {
     local container_name="$1"
     local client_id=$(get_client_id "$container_name")
-    local branding_dir="${OPENWEBUI_BASE}/${client_id}/branding"
 
     log_info "Detected healthy container: $container_name"
 
-    # Check if branding exists
-    if ! has_branding "$client_id"; then
+    # Check if branding exists and get deployment mode
+    local branding_info
+    if ! branding_info=$(has_branding "$client_id"); then
         log_info "No branding configured for $client_id, skipping"
         return 0
     fi
 
-    log_info "Injecting branding for $client_id from $branding_dir"
+    # Parse mode and path
+    local mode="${branding_info%%:*}"
+    local branding_path="${branding_info#*:}"
+
+    log_info "Detected deployment mode: $mode"
+
+    if [ "$mode" = "phase2" ]; then
+        # Phase 2: Volume-mounted static directory - no injection needed
+        log_info "Phase 2 deployment detected for $client_id"
+        log_info "Branding directory: $branding_path (volume-mounted)"
+        log_success "Branding persists automatically via volume mount - no injection needed"
+
+        # Log a reminder about Cloudflare cache
+        log_warning "REMINDER: If using Cloudflare, purge cache for custom branding to appear"
+        log_info "Cloudflare purge: Zone → Caching → Purge Everything or Purge by URL"
+        return 0
+    fi
+
+    # Phase 1: Requires injection
+    log_info "Phase 1 deployment detected - injecting branding for $client_id from $branding_path"
 
     # Run injection script
-    if bash "$INJECTION_SCRIPT" "$container_name" "$client_id" "$branding_dir" >> "$LOG_FILE" 2>&1; then
+    if bash "$INJECTION_SCRIPT" "$container_name" "$client_id" "$branding_path" >> "$LOG_FILE" 2>&1; then
         log_success "Branding injected successfully for $container_name"
 
         # Log a reminder about Cloudflare cache
