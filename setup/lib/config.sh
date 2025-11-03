@@ -306,15 +306,25 @@ init_client_directory() {
         return 1
     }
 
-    # Copy default static assets if they exist
-    if [ -d "$DEFAULTS_STATIC_DIR" ]; then
-        echo "Copying default static assets..."
-        cp -a "$DEFAULTS_STATIC_DIR"/. "$static_dir/" || {
-            echo "WARNING: Failed to copy default static assets" >&2
-        }
+    # Extract default static assets from the Open WebUI image
+    # Uses OPENWEBUI_IMAGE_TAG set by client-manager.sh during deployment
+    echo "Extracting default static assets from Open WebUI image..."
+    echo "  Image: ${OPENWEBUI_IMAGE:-ghcr.io/open-webui/open-webui}:${OPENWEBUI_IMAGE_TAG:-latest}"
+
+    # Find the extract script
+    local extract_script="${REPO_ROOT}/setup/lib/extract-default-static.sh"
+
+    if [ ! -f "$extract_script" ]; then
+        echo "ERROR: extract-default-static.sh not found at: $extract_script" >&2
+        return 1
+    fi
+
+    # Extract directly to client's static directory
+    if bash "$extract_script" "${OPENWEBUI_IMAGE:-ghcr.io/open-webui/open-webui}:${OPENWEBUI_IMAGE_TAG:-latest}" "$static_dir"; then
+        echo "✓ Static assets extracted from image"
     else
-        echo "WARNING: Default static assets not found at: $DEFAULTS_STATIC_DIR" >&2
-        echo "         Run setup/lib/extract-default-static.sh to extract them" >&2
+        echo "ERROR: Failed to extract static assets" >&2
+        return 1
     fi
 
     # Set permissions

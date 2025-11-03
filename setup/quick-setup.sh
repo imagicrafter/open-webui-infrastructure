@@ -444,20 +444,9 @@ else
     exit 1
 fi
 
-# Step 8.6: Extract default static assets for volume-mounted deployments
-echo -e "${BLUE}[8.6/10] Extracting default static assets...${NC}"
-echo -e "${CYAN}This prepares branding assets for volume-mounted deployments${NC}"
-
-# Run extraction script as deploy user
-if sudo -u "$DEPLOY_USER" bash "${REPO_PATH}/setup/lib/extract-default-static.sh"; then
-    echo -e "${GREEN}✅ Default assets extracted to /opt/openwebui/defaults/static${NC}"
-else
-    echo -e "${YELLOW}⚠️  Default asset extraction failed${NC}"
-    echo -e "${YELLOW}   You can run manually later: bash ~/open-webui-infrastructure/setup/lib/extract-default-static.sh${NC}"
-fi
 
 # Step 8.7: Install branding monitor service
-echo -e "${BLUE}[8.7/10] Installing branding monitor service...${NC}"
+echo -e "${BLUE}[8.6/9] Installing branding monitor service...${NC}"
 echo -e "${CYAN}This automatically restores custom branding after container restarts${NC}"
 
 if bash "${REPO_PATH}/setup/services/install-branding-monitor.sh" > /tmp/branding-monitor-install.log 2>&1; then
@@ -470,7 +459,7 @@ else
 fi
 
 # Step 9: Create welcome message
-echo -e "${BLUE}[9/10] Creating welcome message...${NC}"
+echo -e "${BLUE}[9/9] Creating welcome message...${NC}"
 cat > "/home/$DEPLOY_USER/WELCOME.txt" << EOF
 ╔════════════════════════════════════════════════════════════╗
 ║          Open WebUI Deployment Server Ready                ║

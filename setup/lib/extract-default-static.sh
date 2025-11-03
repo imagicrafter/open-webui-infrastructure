@@ -94,13 +94,20 @@ main() {
     fi
 
     # Check if target directory already exists and has files
+    # Skip prompt if running non-interactively (for automated deployment)
     if [ -d "$TARGET_DIR" ] && [ "$(ls -A "$TARGET_DIR" 2>/dev/null)" ]; then
-        log_warning "Target directory already exists and contains files"
-        read -p "Overwrite existing files? (y/N): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            log_info "Extraction cancelled"
-            exit 0
+        if [ -t 0 ]; then
+            # Interactive terminal - prompt user
+            log_warning "Target directory already exists and contains files"
+            read -p "Overwrite existing files? (y/N): " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                log_info "Extraction cancelled"
+                exit 0
+            fi
+        else
+            # Non-interactive - log and proceed
+            log_info "Target directory exists, overwriting (non-interactive mode)"
         fi
     fi
 
