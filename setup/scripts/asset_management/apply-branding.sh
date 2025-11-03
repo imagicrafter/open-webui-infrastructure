@@ -9,6 +9,16 @@
 # Get the directory of this script
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
+# Load centralized configuration
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+if [ -f "$REPO_ROOT/setup/lib/config.sh" ]; then
+    source "$REPO_ROOT/setup/lib/config.sh"
+    load_global_config 2>/dev/null || true
+fi
+
+# Set BASE_DIR default if not loaded
+BASE_DIR="${BASE_DIR:-/opt/openwebui}"
+
 # Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -40,6 +50,35 @@ check_dependencies() {
         return 1
     fi
 
+    return 0
+}
+
+detect_branding_mode() {
+    local client_name="$1"
+
+    # Phase 2 detection: Check if static directory exists and is volume-mounted
+    # Phase 2 uses /opt/openwebui/{client}/static/ with volume mounts
+    # Phase 1 uses /opt/openwebui/{client}/branding/ with post-startup injection
+
+    local static_dir="${BASE_DIR}/${client_name}/static"
+    local branding_dir="${BASE_DIR}/${client_name}/branding"
+
+    if [ -d "$static_dir" ]; then
+        # Check if there are actual static files (indicates Phase 2 volume mount)
+        if [ -n "$(ls -A "$static_dir" 2>/dev/null)" ]; then
+            echo "phase2"
+            return 0
+        fi
+    fi
+
+    # If branding directory exists, it's Phase 1
+    if [ -d "$branding_dir" ]; then
+        echo "phase1"
+        return 0
+    fi
+
+    # Default to Phase 2 for new deployments
+    echo "phase2"
     return 0
 }
 
@@ -161,37 +200,50 @@ apply_branding_to_host() {
     local client_name="$1"
     local temp_dir="$2"
 
+    # Detect which phase this deployment is using
+    local deployment_mode=$(detect_branding_mode "$client_name")
+
     echo
     echo -e "${BLUE}Saving branding to host directory for client: $client_name${NC}"
+    echo -e "${BLUE}Detected deployment mode: $deployment_mode${NC}"
     echo
 
-    local host_branding_dir="/opt/openwebui/${client_name}/branding"
-    local host_static_dir="/opt/openwebui/${client_name}/static"
+    local host_static_dir="${BASE_DIR}/${client_name}/static"
+    local host_branding_dir="${BASE_DIR}/${client_name}/branding"
+    local target_dir=""
 
-    # Create branding directory if it doesn't exist
-    if [ ! -d "$host_branding_dir" ]; then
-        echo -e "${YELLOW}ℹ${NC}  Creating branding directory: $host_branding_dir"
-        mkdir -p "$host_branding_dir" 2>/dev/null || {
-            echo -e "${RED}❌ Cannot create branding directory${NC}"
-            echo -e "${YELLOW}ℹ${NC}  Try: sudo mkdir -p $host_branding_dir && sudo chown qbmgr:qbmgr $host_branding_dir"
+    if [ "$deployment_mode" = "phase2" ]; then
+        # Phase 2: Direct to static directory (volume-mounted, persists automatically)
+        target_dir="$host_static_dir"
+
+        if [ ! -d "$target_dir" ]; then
+            echo -e "${YELLOW}⚠${NC}  Static directory does not exist: $target_dir"
+            echo -e "${YELLOW}ℹ${NC}  This client may not be deployed yet. Deploy first using client-manager.sh"
             return 1
-        }
+        fi
+    else
+        # Phase 1: To branding directory (requires post-startup injection)
+        target_dir="$host_branding_dir"
+
+        # Create branding directory if it doesn't exist
+        if [ ! -d "$target_dir" ]; then
+            echo -e "${YELLOW}ℹ${NC}  Creating branding directory: $target_dir"
+            mkdir -p "$target_dir" 2>/dev/null || {
+                echo -e "${RED}❌ Cannot create branding directory${NC}"
+                echo -e "${YELLOW}ℹ${NC}  Try: sudo mkdir -p $target_dir && sudo chown $(whoami):$(whoami) $target_dir"
+                return 1
+            }
+        fi
     fi
 
     # Ensure writable
-    if [ ! -w "$host_branding_dir" ]; then
-        echo -e "${YELLOW}⚠${NC}  Branding directory not writable, attempting to fix..."
-        sudo -n chown -R $(whoami):$(whoami) "$host_branding_dir" 2>/dev/null || {
+    if [ ! -w "$target_dir" ]; then
+        echo -e "${YELLOW}⚠${NC}  Target directory not writable, attempting to fix..."
+        sudo -n chown -R $(whoami):$(whoami) "$target_dir" 2>/dev/null || {
             echo -e "${RED}❌ Cannot fix permissions${NC}"
-            echo -e "${YELLOW}ℹ${NC}  Run: sudo chown -R qbmgr:qbmgr $host_branding_dir"
+            echo -e "${YELLOW}ℹ${NC}  Run: sudo chown -R $(whoami):$(whoami) $target_dir"
             return 1
         }
-    fi
-
-    # Check if static directory exists (for verification)
-    if [ ! -d "$host_static_dir" ]; then
-        echo -e "${YELLOW}⚠${NC}  Host static directory does not exist: $host_static_dir"
-        echo -e "${YELLOW}ℹ${NC}  Container may not be using Phase 1 bind mounts"
     fi
 
     local files_to_copy=(
@@ -214,8 +266,8 @@ apply_branding_to_host() {
     for file in "${files_to_copy[@]}"; do
         if [ -f "$temp_dir/$file" ]; then
             ((total_count++))
-            if cp -f "$temp_dir/$file" "$host_branding_dir/$file" 2>/dev/null; then
-                echo -e "${GREEN}✓${NC} $host_branding_dir/$file"
+            if cp -f "$temp_dir/$file" "$target_dir/$file" 2>/dev/null; then
+                echo -e "${GREEN}✓${NC} $target_dir/$file"
                 ((success_count++))
             else
                 echo -e "${RED}✗${NC} Failed to copy $file"
@@ -224,30 +276,38 @@ apply_branding_to_host() {
     done
 
     echo
-    echo -e "${GREEN}✅ Branding saved: $success_count/$total_count files copied to branding directory${NC}"
-    echo
-
-    # Automatically run injection script
-    local inject_script="$SCRIPT_DIR/../../lib/inject-branding-post-startup.sh"
-    local container_name="openwebui-${client_name}"
-
-    if [ -f "$inject_script" ]; then
-        echo -e "${BLUE}Running post-startup injection...${NC}"
-        echo
-        if bash "$inject_script" "$container_name" "$client_name" "$host_branding_dir"; then
-            echo
-            echo -e "${GREEN}✅ Branding injected to container successfully!${NC}"
-            echo -e "${BLUE}ℹ${NC}  Branding will persist on container restarts via branding-monitor"
-        else
-            echo
-            echo -e "${YELLOW}⚠${NC}  Injection failed. Container may need to be restarted."
-            echo -e "${BLUE}ℹ${NC}  Manual injection: bash $inject_script $container_name $client_name $host_branding_dir"
-        fi
+    if [ "$deployment_mode" = "phase2" ]; then
+        echo -e "${GREEN}✅ Branding saved: $success_count/$total_count files copied to static directory${NC}"
+        echo -e "${BLUE}ℹ${NC}  Phase 2 deployment detected - branding persists automatically via volume mount${NC}"
+        echo -e "${BLUE}ℹ${NC}  Restart container to apply: docker restart openwebui-${client_name}${NC}"
     else
-        echo -e "${YELLOW}⚠${NC}  Injection script not found: $inject_script"
-        echo -e "${BLUE}ℹ${NC}  Restart container to apply: docker restart $container_name"
+        echo -e "${GREEN}✅ Branding saved: $success_count/$total_count files copied to branding directory${NC}"
     fi
     echo
+
+    # Phase 1: Automatically run injection script
+    if [ "$deployment_mode" = "phase1" ]; then
+        local inject_script="$SCRIPT_DIR/../../lib/inject-branding-post-startup.sh"
+        local container_name="openwebui-${client_name}"
+
+        if [ -f "$inject_script" ]; then
+            echo -e "${BLUE}Running post-startup injection (Phase 1)...${NC}"
+            echo
+            if bash "$inject_script" "$container_name" "$client_name" "$host_branding_dir"; then
+                echo
+                echo -e "${GREEN}✅ Branding injected to container successfully!${NC}"
+                echo -e "${BLUE}ℹ${NC}  Branding will persist on container restarts via branding-monitor"
+            else
+                echo
+                echo -e "${YELLOW}⚠${NC}  Injection failed. Container may need to be restarted."
+                echo -e "${BLUE}ℹ${NC}  Manual injection: bash $inject_script $container_name $client_name $host_branding_dir"
+            fi
+        else
+            echo -e "${YELLOW}⚠${NC}  Injection script not found: $inject_script"
+            echo -e "${BLUE}ℹ${NC}  Restart container to apply: docker restart $container_name"
+        fi
+        echo
+    fi
 
     return 0
 }
