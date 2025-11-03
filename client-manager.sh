@@ -4608,6 +4608,45 @@ check_nginx_status() {
     read
 }
 
+# Function to wait for dpkg lock to be released
+wait_for_dpkg_lock() {
+    local max_wait=300  # Maximum wait time in seconds (5 minutes)
+    local waited=0
+    local lock_found=false
+
+    # Check for dpkg locks
+    while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+          sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1 || \
+          sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
+
+        if [ "$lock_found" = false ]; then
+            echo "⏳ Package manager is currently locked (likely unattended-upgrades running)"
+            echo "   Waiting for it to complete... (timeout: ${max_wait}s)"
+            lock_found=true
+        fi
+
+        # Show a spinner
+        printf "   Waiting: %ds \r" "$waited"
+        sleep 5
+        waited=$((waited + 5))
+
+        if [ $waited -ge $max_wait ]; then
+            echo
+            echo "❌ Timeout waiting for package manager lock (waited ${max_wait}s)"
+            echo "   You can either:"
+            echo "   1. Wait longer and retry this script"
+            echo "   2. Manually kill the process: sudo kill \$(sudo lsof -t /var/lib/dpkg/lock-frontend)"
+            return 1
+        fi
+    done
+
+    if [ "$lock_found" = true ]; then
+        echo
+        echo "✅ Package manager lock released (waited ${waited}s)"
+    fi
+    return 0
+}
+
 install_nginx_host() {
     clear
 
@@ -4641,10 +4680,12 @@ install_nginx_host() {
     echo "📦 Installing nginx and certbot..."
 
     # Update package list
+    wait_for_dpkg_lock
     sudo apt-get update
 
     # Install nginx
     if ! command -v nginx &> /dev/null; then
+        wait_for_dpkg_lock
         sudo apt-get install -y nginx
         if [ $? -ne 0 ]; then
             echo "❌ Failed to install nginx"
@@ -4661,6 +4702,7 @@ install_nginx_host() {
 
     # Check and install certbot binary
     if ! command -v certbot &> /dev/null; then
+        wait_for_dpkg_lock
         sudo apt-get install -y certbot
         if [ $? -ne 0 ]; then
             echo "❌ Failed to install certbot"
@@ -4675,6 +4717,7 @@ install_nginx_host() {
 
     # Check and install nginx plugin (independent check - critical!)
     if ! dpkg -l python3-certbot-nginx 2>/dev/null | grep -q "^ii"; then
+        wait_for_dpkg_lock
         sudo apt-get install -y python3-certbot-nginx
         if [ $? -ne 0 ]; then
             echo "❌ Failed to install python3-certbot-nginx plugin"
