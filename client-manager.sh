@@ -2060,6 +2060,10 @@ manage_single_deployment() {
             echo "Database: SQLite (default)"
         fi
 
+        # Display Open WebUI image version
+        local image_info=$(docker inspect "$container_name" --format '{{.Config.Image}}' 2>/dev/null || echo "unknown")
+        echo "Image:    $image_info"
+
         echo
 
         echo "1) Start deployment"
