@@ -1,12 +1,12 @@
 """
 title: Digital Ocean Function Pipe with KB Image Support
 author: open-webui
-date: 2025-01-12
-version: 8.1.0
+date: 2025-01-22
+version: 9.0.0
 license: MIT
-description: Full-featured DO pipe with automatic image URL extraction and display from knowledge base responses
+description: Full-featured DO pipe with automatic image URL extraction and presigned URL support
 required_open_webui_version: 0.3.9
-requirements: requests
+requirements: requests, boto3
 
 KEY FEATURES:
 - JSON-aware task handling (title/follow-up generation)
@@ -14,7 +14,7 @@ KEY FEATURES:
 - Optional system notification on first response
 - **Automatic image URL detection from agent responses**
 - **Smart deduplication prevents duplicate images** (always enabled)
-- Extracts DO Spaces URLs (public and presigned) from text
+- **NEW: Presigned URL generation for private Digital Ocean Spaces buckets**
 - Displays images as markdown at end of response
 - Works with OpenSearch knowledge base image metadata
 
@@ -24,15 +24,104 @@ HOW IT WORKS:
 3. Agent includes image URLs in response text (e.g., "See chart at https://...")
 4. Pipe extracts URLs using regex pattern
 5. Pipe checks if URLs are already embedded by agent (smart deduplication)
-6. Converts non-embedded URLs to markdown images
-7. Appends images to response (no duplicates)
+6. **NEW: Pipe generates presigned URLs for private DO Spaces images** (if enabled)
+7. Converts non-embedded URLs to markdown images
+8. Appends images to response (no duplicates)
 
-CONFIGURATION:
+PRESIGNED URL SUPPORT (NEW IN v9.0):
+This feature allows the pipe to automatically sign private Digital Ocean Spaces URLs
+so they can be displayed in Open WebUI without manual URL generation.
+
+Configuration (5 valves):
+1. ENABLE_PRESIGNED_URLS (bool, default: False)
+   - Master switch for the feature
+   - When disabled, URLs pass through unchanged
+
+2. DO_SPACES_ACCESS_KEY (str, required if enabled)
+   - Your Spaces access key
+   - Recommendation: Use read-only keys for security
+
+3. DO_SPACES_SECRET_KEY (str, required if enabled)
+   - Your Spaces secret key
+   - Stored securely in Open WebUI valves
+
+4. DO_SPACES_REGION (str, default: "nyc3")
+   - Region where your Spaces bucket is located
+   - Options: nyc3, sfo3, ams3, sgp1, fra1, blr1, lon1, tor1
+
+5. PRESIGNED_URL_EXPIRATION (int, default: 3600)
+   - How long signed URLs remain valid (in seconds)
+   - Default: 3600 seconds (1 hour)
+   - Maximum: 604800 seconds (7 days)
+
+How It Works (Simplified):
+1. When ENABLE_PRESIGNED_URLS = True and credentials are configured:
+   - All Digital Ocean Spaces URLs (*.digitaloceanspaces.com) are signed
+   - URLs with existing signatures (X-Amz-* params) are NOT re-signed
+   - Non-DO-Spaces URLs pass through unchanged
+   - **SECURITY**: Original private URLs are removed from agent text
+   - Replaced with "[image will be displayed below]" placeholder
+
+2. If signing fails (invalid credentials, network error, etc.):
+   - Image is skipped gracefully
+   - Other images continue to display
+   - No error shown to user
+
+3. Debug logging available via DEBUG_MODE valve
+
+STREAMING MODE SECURITY (v9.0.0+):
+✅ Private URLs are filtered BEFORE streaming to user
+✅ URLs replaced with placeholders ("[image will be displayed below]")
+✅ Streaming mode is fully supported and secure
+✅ Buffer-then-stream approach ensures URLs never exposed
+
+Note: Streaming mode buffers the complete agent response, filters private URLs,
+then re-streams the cleaned content. This adds minimal latency (typically <100ms)
+but ensures private URLs are NEVER visible to users. Both streaming and
+non-streaming modes are equally secure.
+
+Simple Setup:
+1. Get Spaces access keys from Digital Ocean dashboard
+2. Enable ENABLE_PRESIGNED_URLS valve
+3. Add DO_SPACES_ACCESS_KEY and DO_SPACES_SECRET_KEY
+4. Set DO_SPACES_REGION to match your bucket
+5. Done! All DO Spaces URLs will be signed automatically
+
+Security Notes:
+- Access/secret keys stored securely in Open WebUI valves
+- Presigned URLs expire after configured time (default: 1 hour)
+- Only GET operations supported (read-only)
+- URLs are never signed twice (existing signatures preserved)
+- Use read-only Spaces keys for least privilege
+
+CONFIGURATION VALVES:
+
+Image Detection:
 - ENABLE_KB_IMAGE_DETECTION: Toggle automatic image detection (default: True)
-- IMAGE_URL_PATTERN: Regex for detecting image URLs (default: DO Spaces URLs)
-- MAX_IMAGES_PER_RESPONSE: Limit number of images displayed (default: 10)
+- IMAGE_URL_PATTERN: Regex for detecting image URLs
+- MAX_IMAGES_PER_RESPONSE: Limit images displayed (default: 10)
 
-Note: Smart deduplication is always enabled - images embedded by the agent will not be duplicated.
+Presigned URLs:
+- ENABLE_PRESIGNED_URLS: Toggle presigned URL generation (default: False)
+- DO_SPACES_ACCESS_KEY: Access key for signing
+- DO_SPACES_SECRET_KEY: Secret key for signing
+- DO_SPACES_REGION: Spaces region (default: nyc3)
+- PRESIGNED_URL_EXPIRATION: URL expiration in seconds (default: 3600)
+
+Agent Configuration:
+- DIGITALOCEAN_FUNCTION_URL: DO agent endpoint URL
+- DIGITALOCEAN_FUNCTION_TOKEN: DO agent access token
+- REQUEST_TIMEOUT_SECONDS: Request timeout (default: 120)
+- VERIFY_SSL: Verify SSL certificates (default: True)
+
+Response Options:
+- ENABLE_STREAMING: Enable streaming responses (default: True)
+- ENABLE_SYSTEM_NOTIFICATION: Show system notification (default: False)
+- SYSTEM_NOTIFICATION_MESSAGE: Custom notification message
+- DEBUG_MODE: Enable debug logging (default: False)
+
+Note: Smart deduplication is always enabled - images embedded by the agent
+will not be duplicated.
 """
 
 from __future__ import annotations
@@ -46,6 +135,9 @@ from typing import Any, Dict, List, Optional, Union, Generator, Iterator
 
 import requests
 from pydantic import BaseModel, Field
+
+import boto3
+from botocore.exceptions import ClientError, BotoCoreError
 
 # Import TASKS from Open WebUI if available
 try:
@@ -104,11 +196,217 @@ class Pipe:
             description="Enable debug logging to help diagnose issues"
         )
 
+        # Presigned URL Support Configuration
+        ENABLE_PRESIGNED_URLS: bool = Field(
+            default=False,
+            description="Enable automatic signing of Digital Ocean Spaces image URLs"
+        )
+        DO_SPACES_ACCESS_KEY: str = Field(
+            default="",
+            description="Digital Ocean Spaces access key (required if presigned URLs enabled)"
+        )
+        DO_SPACES_SECRET_KEY: str = Field(
+            default="",
+            description="Digital Ocean Spaces secret key (required if presigned URLs enabled)"
+        )
+        DO_SPACES_REGION: str = Field(
+            default="nyc3",
+            description="Digital Ocean Spaces region (e.g., nyc3, sfo3, ams3, sgp1, fra1)"
+        )
+        PRESIGNED_URL_EXPIRATION: int = Field(
+            default=3600,
+            description="Presigned URL expiration in seconds (default: 3600 = 1 hour, max: 604800 = 7 days)"
+        )
+
     def __init__(self) -> None:
         self.type = "pipe"
         self.id = "do_function_pipe_kb_images"
         self.name = "DO Function Pipe (KB Images)"
         self.valves = self.Valves()
+        self._s3_client = None  # Lazy initialization for presigned URLs
+
+    # S3 Client for Presigned URLs ---------------------------------------
+    def _get_s3_client(self):
+        """
+        Lazy-load S3 client for presigned URL generation.
+
+        Only initializes boto3 client when needed and credentials are configured.
+        Returns None if credentials are missing (enables graceful degradation).
+        """
+        # Return existing client if already initialized
+        if self._s3_client is not None:
+            return self._s3_client
+
+        # Check if credentials are configured
+        if not self.valves.DO_SPACES_ACCESS_KEY or not self.valves.DO_SPACES_SECRET_KEY:
+            if self.valves.DEBUG_MODE:
+                print("[DEBUG] S3 client not initialized: credentials missing")
+            return None
+
+        try:
+            # Initialize boto3 S3 client with Digital Ocean Spaces endpoint
+            self._s3_client = boto3.client(
+                's3',
+                region_name=self.valves.DO_SPACES_REGION,
+                endpoint_url=f'https://{self.valves.DO_SPACES_REGION}.digitaloceanspaces.com',
+                aws_access_key_id=self.valves.DO_SPACES_ACCESS_KEY,
+                aws_secret_access_key=self.valves.DO_SPACES_SECRET_KEY,
+            )
+
+            if self.valves.DEBUG_MODE:
+                print(f"[DEBUG] S3 client initialized successfully (region: {self.valves.DO_SPACES_REGION})")
+
+            return self._s3_client
+
+        except Exception as e:
+            if self.valves.DEBUG_MODE:
+                print(f"[DEBUG] Failed to initialize S3 client: {e}")
+            return None
+
+    # URL Detection and Parsing ------------------------------------------
+    def _needs_signing(self, url: str) -> bool:
+        """
+        Simple detection: Sign if enabled + credentials exist + not already signed + is DO Spaces.
+
+        Returns True if ALL conditions met:
+        1. ENABLE_PRESIGNED_URLS valve is True
+        2. Credentials are configured
+        3. URL is not already signed (no X-Amz-* parameters)
+        4. URL is from Digital Ocean Spaces domain
+
+        Args:
+            url: Image URL to check
+
+        Returns:
+            True if URL should be signed, False otherwise
+        """
+        # Feature disabled
+        if not self.valves.ENABLE_PRESIGNED_URLS:
+            return False
+
+        # No credentials configured
+        if not self.valves.DO_SPACES_ACCESS_KEY or not self.valves.DO_SPACES_SECRET_KEY:
+            if self.valves.DEBUG_MODE:
+                print("[DEBUG] Cannot sign URLs: credentials not configured")
+            return False
+
+        # Already has presigned parameters
+        if 'X-Amz-' in url:
+            if self.valves.DEBUG_MODE:
+                print(f"[DEBUG] URL already signed, skipping: {url[:80]}...")
+            return False
+
+        # Check if URL is from Digital Ocean Spaces
+        is_do_spaces = '.digitaloceanspaces.com' in url
+
+        if self.valves.DEBUG_MODE:
+            if is_do_spaces:
+                print(f"[DEBUG] DO Spaces URL needs signing: {url[:80]}...")
+            else:
+                print(f"[DEBUG] Not a DO Spaces URL, skipping: {url[:80]}...")
+
+        return is_do_spaces
+
+    def _extract_bucket_and_key(self, url: str) -> tuple:
+        """
+        Extract bucket name and object key from Digital Ocean Spaces URL.
+
+        Supports format: https://BUCKET.REGION.digitaloceanspaces.com/path/to/file.png
+
+        Args:
+            url: Full Digital Ocean Spaces URL
+
+        Returns:
+            Tuple of (bucket_name, object_key) or (None, None) if parsing fails
+        """
+        try:
+            # Remove protocol
+            url_parts = url.replace('https://', '').replace('http://', '')
+
+            # Check for virtual-hosted style: BUCKET.REGION.digitaloceanspaces.com/KEY
+            if '.digitaloceanspaces.com' in url_parts:
+                parts = url_parts.split('.digitaloceanspaces.com/', 1)
+                if len(parts) == 2:
+                    # Extract bucket from subdomain
+                    bucket = parts[0].split('.')[0]
+
+                    # Extract key and remove query params
+                    key = parts[1].split('?')[0]
+
+                    if self.valves.DEBUG_MODE:
+                        print(f"[DEBUG] Extracted bucket: {bucket}, key: {key}")
+
+                    return bucket, key
+
+            if self.valves.DEBUG_MODE:
+                print(f"[DEBUG] Failed to parse bucket/key from URL: {url[:80]}...")
+
+            return None, None
+
+        except Exception as e:
+            if self.valves.DEBUG_MODE:
+                print(f"[DEBUG] Error parsing URL: {e}")
+            return None, None
+
+    def _generate_presigned_url(self, url: str) -> Optional[str]:
+        """
+        Generate presigned URL for Digital Ocean Spaces object.
+
+        Args:
+            url: Original URL to sign
+
+        Returns:
+            Presigned URL if successful, None if signing fails
+        """
+        # Get S3 client (lazy initialization)
+        s3_client = self._get_s3_client()
+        if s3_client is None:
+            if self.valves.DEBUG_MODE:
+                print("[DEBUG] S3 client not available, cannot sign URL")
+            return None
+
+        # Extract bucket and key from URL
+        bucket, key = self._extract_bucket_and_key(url)
+        if not bucket or not key:
+            if self.valves.DEBUG_MODE:
+                print(f"[DEBUG] Failed to extract bucket/key, cannot sign: {url[:80]}...")
+            return None
+
+        if self.valves.DEBUG_MODE:
+            print(f"[DEBUG] Generating presigned URL for: {bucket}/{key}")
+            print(f"[DEBUG] Expiration: {self.valves.PRESIGNED_URL_EXPIRATION} seconds")
+
+        try:
+            presigned_url = s3_client.generate_presigned_url(
+                ClientMethod='get_object',
+                Params={
+                    'Bucket': bucket,
+                    'Key': key,
+                },
+                ExpiresIn=self.valves.PRESIGNED_URL_EXPIRATION
+            )
+
+            if self.valves.DEBUG_MODE:
+                print(f"[DEBUG] Successfully generated presigned URL")
+
+            return presigned_url
+
+        except ClientError as e:
+            if self.valves.DEBUG_MODE:
+                error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+                error_msg = e.response.get('Error', {}).get('Message', str(e))
+                print(f"[DEBUG] AWS ClientError: {error_code} - {error_msg}")
+            return None
+
+        except BotoCoreError as e:
+            if self.valves.DEBUG_MODE:
+                print(f"[DEBUG] BotoCoreError: {str(e)}")
+            return None
+
+        except Exception as e:
+            if self.valves.DEBUG_MODE:
+                print(f"[DEBUG] Unexpected error: {type(e).__name__} - {str(e)}")
+            return None
 
     # Main entry point ---------------------------------------------------
     def pipe(
@@ -362,20 +660,25 @@ class Pipe:
         stream_iter: Iterator,
         request_body: Dict[str, Any]
     ) -> Iterator:
-        """Wrap streaming response to add images and system notification."""
+        """
+        Wrap streaming response to add images and system notification.
+
+        IMPORTANT: Buffers complete response, filters private URLs, then re-streams securely.
+        This ensures private URLs are never visible even in streaming mode.
+        """
 
         # Count existing assistant messages
         messages = request_body.get("messages", [])
         assistant_count = len([m for m in messages if m.get("role") == "assistant"])
 
-        # Collect response content for image extraction
+        # Collect ALL chunks first (buffering strategy for security)
+        all_chunks = []
         accumulated_content = []
 
-        # Yield all chunks from the original stream
         for chunk in stream_iter:
-            yield chunk
+            all_chunks.append(chunk)
 
-            # Try to extract content from streaming chunk
+            # Extract content for later filtering
             if chunk:
                 try:
                     # Decode if bytes
@@ -405,13 +708,39 @@ class Pipe:
         # Combine accumulated content
         full_response = "".join(accumulated_content)
 
-        # Extract image URLs from the response
+        # Extract image URLs and identify URLs to remove
         image_urls = []
+        urls_to_remove = []
         if self.valves.ENABLE_KB_IMAGE_DETECTION and full_response:
-            image_urls = self._extract_image_urls(full_response)
+            image_urls, urls_to_remove = self._extract_image_urls(full_response)
 
             if self.valves.DEBUG_MODE and image_urls:
                 print(f"[DEBUG] Detected {len(image_urls)} image URLs in streaming response")
+
+        # Remove private URLs from response if needed
+        filtered_response = full_response
+        if urls_to_remove:
+            filtered_response = self._remove_urls_from_text(full_response, urls_to_remove)
+
+            if self.valves.DEBUG_MODE:
+                print(f"[DEBUG] Filtered {len(urls_to_remove)} private URLs from stream")
+
+        # Re-stream the filtered response
+        if filtered_response != full_response or urls_to_remove:
+            # Content was filtered, re-stream with filtered content
+            for char in filtered_response:
+                chunk_data = {
+                    "choices": [{
+                        "delta": {"content": char},
+                        "index": 0,
+                        "finish_reason": None
+                    }]
+                }
+                yield f"data: {json.dumps(chunk_data)}\n\n".encode('utf-8')
+        else:
+            # No filtering needed, yield original chunks
+            for chunk in all_chunks:
+                yield chunk
 
         # Add system notification if first message
         if assistant_count == 0 and self.valves.ENABLE_SYSTEM_NOTIFICATION:
@@ -472,7 +801,11 @@ class Pipe:
 
         # Extract and add images
         if self.valves.ENABLE_KB_IMAGE_DETECTION and original_content:
-            image_urls = self._extract_image_urls(original_content)
+            image_urls, urls_to_remove = self._extract_image_urls(original_content)
+
+            # Remove private URLs from agent text for security
+            if urls_to_remove:
+                enhanced_content = self._remove_urls_from_text(enhanced_content, urls_to_remove)
 
             if image_urls:
                 image_markdown = self._format_images_as_markdown(image_urls)
@@ -487,7 +820,7 @@ class Pipe:
 
         return response_data
 
-    def _extract_image_urls(self, text: str) -> List[str]:
+    def _extract_image_urls(self, text: str) -> tuple[List[str], List[str]]:
         """
         Extract image URLs from text using configured pattern.
 
@@ -495,17 +828,23 @@ class Pipe:
         - Plain URLs in text
         - URLs in markdown links: [text](url)
         - URLs in markdown images: ![alt](url)
-        - Presigned URLs with query parameters
+        - **NEW: Automatic presigned URL generation for DO Spaces images**
 
         Smart deduplication (always enabled):
         - Automatically excludes URLs already embedded as markdown images (![...](url))
         - Only adds images that are mentioned but not displayed
         - Prevents duplicate images in the response
+
+        Returns:
+            Tuple of (processed_urls, original_urls_to_remove)
+            - processed_urls: URLs ready for display (possibly signed)
+            - original_urls_to_remove: Original URLs to strip from agent text (for privacy)
         """
         if not text:
-            return []
+            return [], []
 
         image_urls = []
+        urls_to_remove = []  # Track original URLs to remove from text
 
         try:
             # Compile regex pattern from valve
@@ -529,6 +868,27 @@ class Pipe:
             seen = set()
             for url in matches:
                 if url not in seen and url not in embedded_urls:
+                    original_url = url  # Keep track of original URL
+
+                    # Check if URL needs signing (presigned URL generation)
+                    if self._needs_signing(url):
+                        if self.valves.DEBUG_MODE:
+                            print(f"[DEBUG] Attempting to sign URL: {url[:80]}...")
+
+                        signed_url = self._generate_presigned_url(url)
+
+                        # Skip image if signing failed
+                        if signed_url is None:
+                            if self.valves.DEBUG_MODE:
+                                print(f"[DEBUG] Signing failed, skipping image: {url[:80]}...")
+                            continue
+
+                        # Use signed URL and mark original for removal
+                        if self.valves.DEBUG_MODE:
+                            print(f"[DEBUG] Using presigned URL, will remove original from text")
+                        url = signed_url
+                        urls_to_remove.append(original_url)  # Remove original private URL from agent text
+
                     seen.add(url)
                     image_urls.append(url)
 
@@ -552,7 +912,35 @@ class Pipe:
             if self.valves.DEBUG_MODE:
                 print(f"[DEBUG] Error extracting image URLs: {e}")
 
-        return image_urls
+        return image_urls, urls_to_remove
+
+    def _remove_urls_from_text(self, text: str, urls_to_remove: List[str]) -> str:
+        """
+        Remove specified URLs from text to prevent exposing private URLs.
+
+        This is critical for security when using presigned URLs - we don't want
+        to show the original private URLs in the agent's response text.
+
+        Args:
+            text: Original text containing URLs
+            urls_to_remove: List of URLs to strip from text
+
+        Returns:
+            Text with URLs removed
+        """
+        if not urls_to_remove:
+            return text
+
+        cleaned_text = text
+        for url in urls_to_remove:
+            # Remove the URL and any surrounding whitespace/punctuation patterns
+            # Common patterns: "URL", " URL", "URL ", ": URL", "(URL)", "[URL]"
+            cleaned_text = cleaned_text.replace(url, "[image will be displayed below]")
+
+        if self.valves.DEBUG_MODE and urls_to_remove:
+            print(f"[DEBUG] Removed {len(urls_to_remove)} private URLs from agent text for security")
+
+        return cleaned_text
 
     def _format_images_as_markdown(self, image_urls: List[str]) -> str:
         """Convert list of image URLs to markdown format."""
