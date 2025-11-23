@@ -2,7 +2,7 @@
 title: Digital Ocean Function Pipe with KB Image Support
 author: open-webui
 date: 2025-01-22
-version: 9.0.0
+version: 9.0.3
 license: MIT
 description: Full-featured DO pipe with automatic image URL extraction and presigned URL support
 required_open_webui_version: 0.3.9
@@ -14,7 +14,7 @@ KEY FEATURES:
 - Optional system notification on first response
 - **Automatic image URL detection from agent responses**
 - **Smart deduplication prevents duplicate images** (always enabled)
-- **NEW: Presigned URL generation for private Digital Ocean Spaces buckets**
+- **FIXED: Presigned URL generation now uses virtual-hosted-style addressing**
 - Displays images as markdown at end of response
 - Works with OpenSearch knowledge base image metadata
 
@@ -24,13 +24,28 @@ HOW IT WORKS:
 3. Agent includes image URLs in response text (e.g., "See chart at https://...")
 4. Pipe extracts URLs using regex pattern
 5. Pipe checks if URLs are already embedded by agent (smart deduplication)
-6. **NEW: Pipe generates presigned URLs for private DO Spaces images** (if enabled)
+6. **FIXED: Pipe generates presigned URLs in correct virtual-hosted format**
 7. Converts non-embedded URLs to markdown images
 8. Appends images to response (no duplicates)
 
-PRESIGNED URL SUPPORT (NEW IN v9.0):
+PRESIGNED URL SUPPORT (v9.0.3 - OPTIMIZED):
 This feature allows the pipe to automatically sign private Digital Ocean Spaces URLs
 so they can be displayed in Open WebUI without manual URL generation.
+
+**v9.0.1 FIX**: Added virtual-hosted-style addressing configuration to boto3 client.
+This ensures presigned URLs match the original URL format and work correctly with
+Digital Ocean Spaces credentials.
+
+**v9.0.2 FIX**: Added graceful fallback for public images and multi-bucket scenarios.
+When signing fails (e.g., public images or different bucket), the pipe now uses the
+original URL instead of skipping the image. This allows mixed public/private buckets
+to work correctly.
+
+**v9.0.3 FIX**: Added public accessibility check before signing. The pipe now makes a
+HEAD request to detect if an image is publicly accessible before attempting to sign it.
+This prevents unnecessary signing of public images while still providing presigned URLs
+for private images. Only truly private images are signed, improving performance and
+reducing unnecessary processing.
 
 Configuration (5 valves):
 1. ENABLE_PRESIGNED_URLS (bool, default: False)
@@ -137,6 +152,7 @@ import requests
 from pydantic import BaseModel, Field
 
 import boto3
+import botocore.config
 from botocore.exceptions import ClientError, BotoCoreError
 
 # Import TASKS from Open WebUI if available
@@ -232,6 +248,8 @@ class Pipe:
 
         Only initializes boto3 client when needed and credentials are configured.
         Returns None if credentials are missing (enables graceful degradation).
+
+        v9.0.1: Added virtual-hosted-style addressing to fix presigned URL format.
         """
         # Return existing client if already initialized
         if self._s3_client is not None:
@@ -245,16 +263,19 @@ class Pipe:
 
         try:
             # Initialize boto3 S3 client with Digital Ocean Spaces endpoint
+            # IMPORTANT: Use virtual-hosted-style addressing to match DO Spaces URL format
             self._s3_client = boto3.client(
                 's3',
                 region_name=self.valves.DO_SPACES_REGION,
                 endpoint_url=f'https://{self.valves.DO_SPACES_REGION}.digitaloceanspaces.com',
                 aws_access_key_id=self.valves.DO_SPACES_ACCESS_KEY,
                 aws_secret_access_key=self.valves.DO_SPACES_SECRET_KEY,
+                config=botocore.config.Config(s3={'addressing_style': 'virtual'})  # v9.0.1 FIX
             )
 
             if self.valves.DEBUG_MODE:
                 print(f"[DEBUG] S3 client initialized successfully (region: {self.valves.DO_SPACES_REGION})")
+                print(f"[DEBUG] Using virtual-hosted-style addressing for presigned URLs")
 
             return self._s3_client
 
@@ -306,6 +327,39 @@ class Pipe:
                 print(f"[DEBUG] Not a DO Spaces URL, skipping: {url[:80]}...")
 
         return is_do_spaces
+
+    def _is_publicly_accessible(self, url: str) -> bool:
+        """
+        Check if a URL is publicly accessible without credentials.
+
+        Makes a HEAD request to see if the image can be accessed without signing.
+        This prevents unnecessary signing of public images.
+
+        Args:
+            url: URL to check
+
+        Returns:
+            True if URL is publicly accessible, False otherwise
+        """
+        try:
+            # Make HEAD request without credentials
+            response = requests.head(url, timeout=5, allow_redirects=True)
+
+            is_public = response.status_code == 200
+
+            if self.valves.DEBUG_MODE:
+                if is_public:
+                    print(f"[DEBUG] URL is publicly accessible, skipping signing: {url[:80]}...")
+                else:
+                    print(f"[DEBUG] URL is private (status {response.status_code}), will sign: {url[:80]}...")
+
+            return is_public
+
+        except requests.exceptions.RequestException as e:
+            # If request fails, assume private (better to sign unnecessarily than fail)
+            if self.valves.DEBUG_MODE:
+                print(f"[DEBUG] Could not check accessibility ({e}), assuming private: {url[:80]}...")
+            return False
 
     def _extract_bucket_and_key(self, url: str) -> tuple:
         """
@@ -388,6 +442,7 @@ class Pipe:
 
             if self.valves.DEBUG_MODE:
                 print(f"[DEBUG] Successfully generated presigned URL")
+                print(f"[DEBUG] URL format: {presigned_url[:100]}...")
 
             return presigned_url
 
@@ -872,22 +927,33 @@ class Pipe:
 
                     # Check if URL needs signing (presigned URL generation)
                     if self._needs_signing(url):
-                        if self.valves.DEBUG_MODE:
-                            print(f"[DEBUG] Attempting to sign URL: {url[:80]}...")
-
-                        signed_url = self._generate_presigned_url(url)
-
-                        # Skip image if signing failed
-                        if signed_url is None:
+                        # First check if image is publicly accessible
+                        if self._is_publicly_accessible(url):
                             if self.valves.DEBUG_MODE:
-                                print(f"[DEBUG] Signing failed, skipping image: {url[:80]}...")
-                            continue
+                                print(f"[DEBUG] Using original public URL, no signing needed")
+                            # Use original URL for public images
+                            url = original_url
+                            # Don't mark for removal since it's already public
+                        else:
+                            # Image is private, attempt to sign it
+                            if self.valves.DEBUG_MODE:
+                                print(f"[DEBUG] Attempting to sign private URL: {url[:80]}...")
 
-                        # Use signed URL and mark original for removal
-                        if self.valves.DEBUG_MODE:
-                            print(f"[DEBUG] Using presigned URL, will remove original from text")
-                        url = signed_url
-                        urls_to_remove.append(original_url)  # Remove original private URL from agent text
+                            signed_url = self._generate_presigned_url(url)
+
+                            # Fallback to original URL if signing failed (e.g., different bucket without access)
+                            if signed_url is None:
+                                if self.valves.DEBUG_MODE:
+                                    print(f"[DEBUG] Signing failed, using original URL: {url[:80]}...")
+                                # Use original URL - likely from a different bucket without access
+                                url = original_url
+                                # Don't mark for removal since we're keeping the original URL
+                            else:
+                                # Successfully signed - use presigned URL and mark original for removal
+                                if self.valves.DEBUG_MODE:
+                                    print(f"[DEBUG] Using presigned URL, will remove original from text")
+                                url = signed_url
+                                urls_to_remove.append(original_url)  # Remove original private URL from agent text
 
                     seen.add(url)
                     image_urls.append(url)
