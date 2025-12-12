@@ -2,7 +2,7 @@
 title: Digital Ocean Function Pipe with KB Image Support
 author: open-webui
 date: 2025-01-22
-version: 9.0.3
+version: 9.0.4
 license: MIT
 description: Full-featured DO pipe with automatic image URL extraction and presigned URL support
 required_open_webui_version: 0.3.9
@@ -28,7 +28,7 @@ HOW IT WORKS:
 7. Converts non-embedded URLs to markdown images
 8. Appends images to response (no duplicates)
 
-PRESIGNED URL SUPPORT (v9.0.3 - OPTIMIZED):
+PRESIGNED URL SUPPORT (v9.0.4 - CLEAN OUTPUT):
 This feature allows the pipe to automatically sign private Digital Ocean Spaces URLs
 so they can be displayed in Open WebUI without manual URL generation.
 
@@ -46,6 +46,11 @@ HEAD request to detect if an image is publicly accessible before attempting to s
 This prevents unnecessary signing of public images while still providing presigned URLs
 for private images. Only truly private images are signed, improving performance and
 reducing unnecessary processing.
+
+**v9.0.4 FIX**: Remove ALL image URLs from agent text (public and private). Previously,
+public image URLs were left visible in the agent's text. Now all image URLs are removed
+from the text and only displayed as markdown images at the end of the response, providing
+a cleaner user experience regardless of whether images are public or private.
 
 Configuration (5 valves):
 1. ENABLE_PRESIGNED_URLS (bool, default: False)
@@ -933,7 +938,8 @@ class Pipe:
                                 print(f"[DEBUG] Using original public URL, no signing needed")
                             # Use original URL for public images
                             url = original_url
-                            # Don't mark for removal since it's already public
+                            # Mark for removal to keep agent text clean (images shown at end only)
+                            urls_to_remove.append(original_url)
                         else:
                             # Image is private, attempt to sign it
                             if self.valves.DEBUG_MODE:
@@ -947,7 +953,8 @@ class Pipe:
                                     print(f"[DEBUG] Signing failed, using original URL: {url[:80]}...")
                                 # Use original URL - likely from a different bucket without access
                                 url = original_url
-                                # Don't mark for removal since we're keeping the original URL
+                                # Mark for removal to keep agent text clean (images shown at end only)
+                                urls_to_remove.append(original_url)
                             else:
                                 # Successfully signed - use presigned URL and mark original for removal
                                 if self.valves.DEBUG_MODE:
