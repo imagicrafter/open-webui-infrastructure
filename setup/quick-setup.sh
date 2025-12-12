@@ -229,7 +229,7 @@ case "$SERVER_TYPE" in
         DOCKER_IMAGE_TAG="main"
         ;;
     production|PRODUCTION|prod|PROD|p|P)
-        DOCKER_IMAGE_TAG="release"
+        DOCKER_IMAGE_TAG="latest"
         ;;
     development|DEVELOPMENT|dev|DEV|d|D)
         DOCKER_IMAGE_TAG="main"

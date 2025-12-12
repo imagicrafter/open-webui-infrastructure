@@ -138,7 +138,7 @@ The script automatically:
   - **Production servers**: Clones `release` branch (stable tested code)
 - ✅ **Sets OPENWEBUI_IMAGE_TAG environment variable** (automatic image selection)
   - **Test servers**: `OPENWEBUI_IMAGE_TAG=main` (uses `:main` Docker images)
-  - **Production servers**: `OPENWEBUI_IMAGE_TAG=release` (uses `:release` Docker images)
+  - **Production servers**: `OPENWEBUI_IMAGE_TAG=latest` (uses `:latest` Docker images - stable releases)
   - Configured in `~/.bashrc` for persistent use
 - ✅ Creates `/opt/openwebui-nginx` directory
 - ✅ Installs useful packages (certbot, jq, htop, tree, net-tools, imagemagick)
@@ -152,7 +152,7 @@ The setup script automatically configures your server to use the appropriate Doc
 | Server Type | OPENWEBUI_IMAGE_TAG | Docker Image | Updates |
 |-------------|---------------------|--------------|---------|
 | **Test** | `main` | `ghcr.io/open-webui/open-webui:main` | Latest development code |
-| **Production** | `release` | `ghcr.io/open-webui/open-webui:release` | Stable, tested releases only |
+| **Production** | `latest` | `ghcr.io/open-webui/open-webui:latest` | Stable, tested releases only |
 
 **How it works:**
 - The `OPENWEBUI_IMAGE_TAG` environment variable is set in `~/.bashrc`
